@@ -110,7 +110,7 @@ else()
 endif()
 
 # The run's log and the text of crash reports.
-add_library(ts2diag src/diag/log.cpp src/diag/report.cpp src/diag/timing.cpp src/diag/upload.cpp)
+add_library(ts2diag src/diag/log.cpp src/diag/memory.cpp src/diag/report.cpp src/diag/timing.cpp src/diag/upload.cpp)
 target_include_directories(ts2diag PUBLIC src)
 target_link_libraries(ts2diag PRIVATE project_warnings)
 
@@ -285,6 +285,7 @@ target_link_libraries(ts2sim PUBLIC ts2content PRIVATE ts2scene lua50 project_wa
 # Scenes to draw, built from the game's models and lots, independent of any graphics API.
 add_library(ts2scene
     src/scene/scene.cpp
+    src/scene/scene_memory.cpp
     src/scene/hood_drift.cpp
     src/scene/assets.cpp
     src/scene/builder.cpp

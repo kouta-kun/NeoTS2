@@ -23,6 +23,8 @@
 #include "content/lighting_state.hpp"
 #include "content/lot.hpp"
 #include "diag/log.hpp"
+#include "diag/memory.hpp"
+#include "scene/scene_memory.hpp"
 #include "diag/timing.hpp"
 #include "content/material_scripts.hpp"
 #include "content/neighborhood.hpp"
@@ -675,6 +677,7 @@ void Game::showNeighborhood(Built built) {
                                 hood_.stats.height, hood_.stats.imposters, hood_.stats.plantsShown, hood_.stats.decorationsShown,
                                 secondsSince(hoodLoadStarted_)));
     renderer_.upload(std::move(hood_.gpu));
+    ts2::diag::logMemory("with the neighborhood shown");
     hoodShownAt_ = ts2::platform::ticksNs();
     orbit_ = hood_.camera;
     hoodDrift_ = hood_.drift;
@@ -942,6 +945,10 @@ void Game::showLot(LotBuilt& built) {
     hovered_ = 0;
     lotShown_ = ts2::platform::ticksNs();
     ts2::diag::info(std::format("lot {} shown after {:.1f} s", enteredLot_, secondsSince(lotLoadStarted_)));
+    ts2::diag::logMemory("with the lot shown");
+    ts2::diag::info("lot scene holds " + ts2::scene::describeMemory(lot_));
+    ts2::diag::info("neighborhood scene holds " + ts2::scene::describeMemory(hood_.scene));
+    ts2::diag::info("lot geometry: " + ts2::scene::describeGeometry(lot_));
 
     screen_.setVisible(hoodUi_.root(), false);
     hoodUi_.showBin(app::NeighborhoodUi::Bin::None);
@@ -954,6 +961,7 @@ void Game::showLot(LotBuilt& built) {
 // Back to the neighborhood, as it was.
 void Game::leaveLot() {
     ts2::diag::step("back to the neighborhood");
+    ts2::diag::logMemory("leaving the lot");
     endCameraDrag();
     inLot_ = false;
     // Freeing all of the lot at once took a fifth of a second.
@@ -1525,6 +1533,7 @@ void Game::handleEvent(const pf::Event& e) {
         closeQuitBox();  // Escape answers No
     } else if (e.type == pf::Event::Type::Quit) {
         ts2::diag::step("window closed");
+        ts2::diag::logMemory("at exit");
         running_ = false;
     } else if (e.type == pf::Event::Type::KeyDown && inLot_ && pieMenu_.isOpen()) {
         // Any key, Escape too, closes an open pie menu. Escape does nothing else in the game.
@@ -1580,6 +1589,7 @@ void Game::windowClicked(int window) {
         closeQuitBox();
         if (*yes) {
             ts2::diag::step("quitting (quit box)");
+            ts2::diag::logMemory("at quitting");
             running_ = false;
         }
         return;
