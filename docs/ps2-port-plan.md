@@ -33,6 +33,28 @@ Status: a draft to work from, not a design. Every number says where it comes fro
 
 None of these carries over directly: the PC holds decoded floats and RGBA, the PS2 data would be compact from the start.
 
+## Toolchain check (done, 2026-10-24)
+
+ps2dev under `$PS2DEV`: `mips64r5900el-ps2-elf-g++` is **GCC 15.2.0**; ps2sdk, gsKit and a `dvp` directory are present. One
+small C++20 test file for each library feature the engine uses, compiled with `-std=c++20 -D_EE -O2 -G0` and linked
+with `-lkernel -lc` (scratch files, not the repository's build):
+
+| Feature | Result |
+|---|---|
+| ranges, span, optional, variant, bit, numbers, chrono, exceptions, iostreams, unordered_map, std::function, stringstream | compile and link |
+| `std::to_chars` for integers | compile and link |
+| `std::filesystem` (path, exists) | compiles and links; **runtime behaviour unchecked** (108 files use it) |
+| `std::thread` | compiles and links (ps2sdk provides `pthread_create`) |
+| `std::format` | **GCC internal compiler error** in `std::__countl_zero<unsigned __int128>` (the header's 128-bit integer path). **Works with `-std=c++20 -U__SIZEOF_INT128__`** (for integers and strings) |
+| `std::format` of `float`/`double`, `std::to_chars` and `std::from_chars` for floating point | **not available** (`std::formatter<double>` is deleted; no floating-point charconv). The engine has 98 `std::format` calls in 22 files, 33 with a floating-point spec in 11 files (mostly logs and diagnostics, some in `sim/walk_path.cpp` and `scene/walls.cpp`) |
+| `std::atomic`, `std::mutex`, `std::async` | compile, but **do not link**: undefined `__atomic_fetch_add_4`, `__atomic_test_and_set`. Needs a small shim of those helpers (the EE has no load-linked/store-conditional as I recall: **unverified**; interrupts can be masked instead). 14 files use these |
+
+So the language level is fine. The library gaps are three small, local problems: a compiler flag, a float-formatting
+helper, and an atomics shim.
+
+Not yet checked: how big the code is when built, and whether `std::filesystem` and exceptions behave at run time (needs an
+emulator or the console).
+
 ## Memory sheet: 32 MB of main RAM
 
 The first three columns are facts about the PC; "target" is what this sheet asks the PS2 build to fit in. All targets
@@ -133,8 +155,8 @@ a scene build there.
 
 ## Work, in order
 
-1. **Toolchain.** Build a C++20 hello-world with the current ps2dev toolchain: `std::format`, `std::filesystem`,
-   `std::thread`, exceptions, the engine's `-std` and warnings. Unverified today; everything depends on it.
+1. **Toolchain.** Done as far as compiling goes (see the check above). Next: cross-compile the engine's headless libraries
+   (formats, content, scene, sim) for the EE and fix what breaks; then run something on an emulator or the console.
 2. **Measurements.** Binary size on PS2; heap by subsystem (content, simulation, Lua); the geometry sheet; which UI
    sprites are drawn; the simulation tick on a slow machine.
 3. **Converter (host tool).** Reads the base-game packages and writes: textures (4/8-bit, sizes chosen by the screen
