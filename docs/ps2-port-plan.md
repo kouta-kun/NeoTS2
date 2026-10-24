@@ -13,8 +13,11 @@ Status: a draft to work from, not a design. Every number says where it comes fro
 - The PS2 build runs the engine's simulation, builds a lot's scene from converted data, and draws with the GS.
 - Allowed: lower texture quality (4-bit palettes, small sizes), dropped effects (no bump maps, specular, water
   reflection, light-map pixels finer than a tile), loading screens between neighborhood and lot.
-- Storage: DVD or hard drive for converted data, read on demand. USB 1.1 is too slow for anything but saves and
-  config (about 1.5 MB/s theoretical, from forum posts, not benchmarked); the memory card is for saves only.
+- Order of what goes first if the sheet doesn't close: model and texture detail, then texture variety, then object
+  variety and lot size. Rather than shrinking lots, limit them to a single floor.
+- Storage: DVD only, read on demand, assumed. In practice it will run networked through OPL or Neutrino, so the
+  file system is whatever those provide; a local cache on USB is not assumed (USB 1.1 is too slow for anything but
+  saves and config, about 1.5 MB/s theoretical, from forum posts, not benchmarked; the memory card is for saves only).
 
 ## What the PC measurements say (the starting point, not the target)
 
@@ -55,18 +58,54 @@ the sheet no longer closes.
 
 ## Geometry and speed
 
-- The lot has about 250,000 triangles with every instance counted once. A PS2 game of this kind draws something like
-  30,000 triangles a frame at 30 fps (**assumed**; depends on the renderer and on VU1 microcode). That is
-  roughly 8 times fewer.
-- Where the triangles are, by kind and by mesh, is not known. `lot geometry:` in the log now says; read it before
-  designing level of detail.
-- What reduces them: culling by room and view (the game already culls boxes), distance-based level of detail for
-  objects, merging floor and wall tiles into larger faces, removing small objects far from the camera.
-- The CPU is an R5900 at about 295 MHz (**spec**). The simulation (SimAntics VM, pathfinding, Lua UI) has not been
-  timed on anything slow. The iMac G3 is a rough proxy (a different design, about the same clock): time a simulation
-  tick and a scene build there.
-- Lighting stays on the CPU or moves to VU1. ps2gl's VU1 code lights directional and point lights per vertex (**read in
-  source**); this engine's model has eight lights with ranges and spots, which VU1 can do but needs microcode.
+**What the GS can take** (manual): 2.4 Gpixel/s untextured and 1.2 Gpixel/s textured, with Z buffer and blending
+on; triangle setup 37.5 M/s for textured Gouraud triangles (4 cycles each). At 30 fps that is 1.25 M triangles
+and 40 M pixels a frame, against a 640x448 screen of 0.29 M pixels. The GS is not the limit.
+
+**What limits it**, from secondary sources (not Sony documents, so treat as rough):
+sustained rates of 15 to 20 M polygons/s are quoted for real scenes, which is 500,000 to 650,000 a frame at 30 fps for a graphics
+demo; the GS's input bus (the GIF) is quoted as 64 bits at 150 MHz, about 1.2 GB/s, and as the bottleneck for submitted
+geometry. A textured Gouraud vertex is three 16-byte registers in packed form (**spec**, unverified here), so about
+48 bytes a vertex, 144 a triangle in a list and nearer 48 in a strip. A frame of 400,000 list triangles would be
+about 58 MB, more than the bus carries in a frame; the same as strips, about 19 MB, would not. Vertices are meant to
+be stored compactly in RAM and expanded by VU1 straight to the GIF.
+
+**What the engine spends before the GS.** Not measured, and where the real cost is:
+- Transform, clip and light on VU1 (microcode to write; no documented cycles-per-vertex figure found).
+- This engine lights every vertex on the CPU (`render/cpu_light`, eight lights with ranges and spots). On a scalar
+  295 MHz core that is the most expensive thing in the frame; it has to move to VU1, be cut to a few lights, or be done per object for
+  small and distant things.
+- The simulation, UI and streaming share the same EE time.
+
+**Where a lot's triangles are** (measured, one lot, every instance counted, 414,000 in all; 249,000 with each mesh once):
+
+| Kind | Triangles | Instances | Note |
+|---|---|---|---|
+| Ground (terrain mesh) | 81,000 | 1 | one dense mesh, 81 k triangles |
+| Fences | about 102,000 | about 410 | rail 368 triangles x 182, post 166 x 188, brick rail 124 x 44 |
+| Other objects | about 206,000 | about 280 | plants (poppy 1,051 triangles x 12), windows (996 x 9), chairs, shrubs |
+| Floors | 11,000 | 11 | |
+| Roofs | 5,000 | 7 | |
+| Walls and hubs | 4,000 | 572 | |
+| Skirt | 1,000 | 2 | |
+
+Most of it is not what the player looks at. Three cuts, all offline, would take it to a tenth:
+1. **Ground**: a coarser grid (one vertex a tile or a decimated height field) instead of 81,000 triangles. Neighbouring
+   lots need not be shown. Likely 4,000 to 6,000 triangles.
+2. **Fences and plants**: a 368-triangle rail and a 1,051-triangle poppy are far more than a PS2 screen can show. Simplified models of
+   10 to 100 triangles, and a distance cut-off. Fences alone are 100,000 triangles today.
+3. **Objects generally**: an average of 444 triangles an instance now; level-of-detail models bring the near ones to 100-200 and the far
+   ones to 20 or none.
+
+A first estimate after those: 70,000 triangles with everything in view and 30,000 to 40,000 in a typical view, with unique
+mesh data of about 100,000 vertices (1.6 MB at 16 bytes). That is **assumed**: the real figures come from the converter.
+
+Memory, not speed, is why the unique geometry matters: the lot today has 631,450 unique vertices, about 10 MB even at
+16 bytes a vertex.
+
+**CPU.** The R5900 is about 295 MHz (**spec**). The simulation (SimAntics VM, pathfinding, Lua UI) has not been timed on
+anything slow. The iMac G3 is a rough proxy (a different design, about the same clock): time a simulation tick and
+a scene build there.
 
 ## What exists already
 
@@ -99,6 +138,5 @@ M3 a lot view with fixed lighting; M4 a simulation tick; M5 playable loop with U
 ## Open questions for the owner
 
 - Which GCC and libstdc++ the ps2dev toolchain gives today, and whether `std::filesystem` and `std::format` work.
-- Which kinds of detail may be dropped first if the sheet doesn't close (Sims' texture detail? object variety? lot size?).
-- Whether lots may be limited in size or in number of objects on the PS2.
-- Hard drive as a requirement, or DVD-only to start with.
+- (Answered: detail first, then texture variety, then object variety and lot size; single-floor lots rather than smaller ones.)
+- (Answered: DVD only, networked through OPL or Neutrino in practice.)
