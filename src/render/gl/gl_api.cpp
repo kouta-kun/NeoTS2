@@ -1,6 +1,6 @@
 #include "render/gl/gl_api.hpp"
 
-#include <SDL3/SDL.h>
+#include "platform/platform.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -11,7 +11,7 @@ namespace ts2::render::gl {
 bool Api::load(const char*& missing) {
     missing = nullptr;
 #define TS2_GL_LOAD(name)                                                                \
-    name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name));          \
+    name = reinterpret_cast<decltype(name)>(platform::glProcAddress("gl" #name));        \
     if (name == nullptr && missing == nullptr) {                                         \
         missing = "gl" #name;                                                            \
     }
@@ -31,7 +31,7 @@ bool Api::load(const char*& missing) {
     framebuffers = hasExtension("GL_EXT_framebuffer_object");
     if (framebuffers) {
 #define TS2_GL_LOAD_OPTIONAL(name)                                                       \
-    name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name));          \
+    name = reinterpret_cast<decltype(name)>(platform::glProcAddress("gl" #name));        \
     framebuffers = framebuffers && name != nullptr;
         TS2_GL_FRAMEBUFFER(TS2_GL_LOAD_OPTIONAL)
 #undef TS2_GL_LOAD_OPTIONAL
