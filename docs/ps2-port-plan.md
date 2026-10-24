@@ -103,6 +103,22 @@ mesh data of about 100,000 vertices (1.6 MB at 16 bytes). That is **assumed**: t
 Memory, not speed, is why the unique geometry matters: the lot today has 631,450 unique vertices, about 10 MB even at
 16 bytes a vertex.
 
+**Transform and lighting on the vector units.** Yes, and it is how the machine is meant to be used.
+- VU1 (micromode only, with extra buses to feed the GS without using the main bus; Copetti's PS2 article) is the geometry
+  unit: it runs microcode that transforms, clips, culls and lights a batch of vertices streamed in by DMA, and writes the
+  GS packets out directly. VU0 is the CPU's coprocessor in macro mode (and can run microcode too), so it suits per-object
+  and animation work: matrices, skinning, preparing batches for VU1.
+- ps2gl's source (`vu1/*.vcl`, LGPL 2.1, with the assembled `.vsm` files) is a worked example: microcode that
+  transforms with a matrix, clips, back-face culls, and lights with directional, point and spot lights (counts
+  kept in VU memory), in variants for triangles, quads, specular, per-vertex colour and indexed input, with double-buffered
+  input and output (three quadwords a vertex each way). It is a starting point, not a drop-in: its light model is GL's, and this
+  engine's is a sum of eight lights with a range cut-off, `1/(1 + falloff x distance squared)`, and a spot cone in cosines
+  (see `render/cpu_light.cpp`), which needs microcode of its own. It does no skinning.
+- What I could not verify here: VU1's memory sizes and cycles per vertex, and whether the ps2dev toolchain ships the VU
+  assembler and the VCL optimiser. Both decide how hard the microcode is; a prototype on real hardware answers them.
+- Not everything needs per-frame lighting. Floors, walls, terrain and scenery change light only when the time of day or a
+  lamp does, so their vertex colours can be computed on a change and kept; only Sims and the objects near them need it every frame.
+
 **CPU.** The R5900 is about 295 MHz (**spec**). The simulation (SimAntics VM, pathfinding, Lua UI) has not been timed on
 anything slow. The iMac G3 is a rough proxy (a different design, about the same clock): time a simulation tick and
 a scene build there.
