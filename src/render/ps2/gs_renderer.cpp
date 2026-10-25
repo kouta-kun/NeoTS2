@@ -565,7 +565,9 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             continue;
         }
         const scene::Material* m = d.material;
+        const double u0 = now();
         const DrawUniforms u = FramePlan::uniformsFor(*this, *this, f, d, blend);
+        frame_.uniforms += now() - u0;
         const VertexUniforms& vu = u.vertex.frame;
         const FragmentUniforms& fu = u.fragment;
         ++frame_.draws;

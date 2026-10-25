@@ -82,7 +82,7 @@ public:
         // Seconds spent in each part of the frame (wall clock; in an emulator only their proportions mean anything).
         std::size_t vertices = 0, litHits = 0, litMisses = 0, litCacheKiB = 0;
         std::size_t vuBatches = 0, vuCorners = 0, vuWaits = 0, eeCorners = 0;
-        double vuBuild = 0, vuWait = 0;
+        double vuBuild = 0, vuWait = 0, uniforms = 0;
         double collect = 0, expand = 0, light = 0, transform = 0, emit = 0, state = 0, submit = 0;
     };
     [[nodiscard]] const FrameStats& lastFrame() const { return frame_; }

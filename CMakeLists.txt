@@ -365,7 +365,7 @@ if(PS2)
     target_link_libraries(ts2gs PUBLIC ts2renderplan PRIVATE project_warnings packet2 dma)
     add_executable(gs_lotview tools/gs_lotview/main.cpp)
     target_link_directories(gs_lotview PRIVATE $ENV{PS2DEV}/gsKit/lib)
-    target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma)
+    target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
 endif()
 

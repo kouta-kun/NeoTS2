@@ -4,13 +4,19 @@
 #include "render/ps2/gs_renderer.hpp"
 
 #include <dmaKit.h>
+#include <libpad.h>
+#include <loadfile.h>
+#include <sifrpc.h>
 #include <gsKit.h>
 #include <kernel.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <malloc.h>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -48,6 +54,14 @@ int main(int argc, char** argv) {
             std::free(b);
         }
     }
+    // The controller: the ROM's pad modules, port 1.
+    SifInitRpc(0);
+    SifLoadModule("rom0:SIO2MAN", 0, nullptr);
+    SifLoadModule("rom0:PADMAN", 0, nullptr);
+    padInit(0);
+    static char padArea[256] __attribute__((aligned(64)));
+    const bool padOpen = padPortOpen(0, 0, padArea) != 0;
+    std::printf("gs_lotview: pad port %s\n", padOpen ? "open" : "failed");
     std::FILE* file = std::fopen(path, "rb");
     if (!file) {
         std::printf("gs_lotview: cannot open %s\n", path);
@@ -93,8 +107,24 @@ int main(int argc, char** argv) {
         camera.farPlane = 400;
         const float orbit = argc > 3 ? static_cast<float>(std::atof(argv[3])) : 0.0f;  // radians a frame the camera turns about the lot
         const ts2::render::Vec3 eye0 = camera.eye;
-        for (int frame = 0; frame < 4; ++frame) {
-            if (orbit != 0) {
+        // "pad" as the last argument: run until the console is switched off, the camera on the controller (left stick turns and tilts, L1/R1 or the
+        // d-pad's up and down move in and out). Otherwise four frames, for tests.
+        const bool interactive = argc > 1 && std::string(argv[argc - 1]) == "pad";
+        float turn = 0, height = 1.0f, distance = 1.0f;
+        padButtonStatus pad;
+        std::memset(&pad, 0, sizeof pad);
+        for (int frame = 0; interactive || frame < 4; ++frame) {
+            if (interactive && padOpen && padGetState(0, 0) == PAD_STATE_STABLE && padRead(0, 0, &pad) != 0) {
+                const unsigned buttons = static_cast<unsigned>(pad.btns ^ 0xFFFF);  // active low
+                const float stickX = (static_cast<int>(pad.ljoy_h) - 128) / 128.0f, stickY = (static_cast<int>(pad.ljoy_v) - 128) / 128.0f;
+                turn += std::fabs(stickX) > 0.2f ? stickX * 0.03f : 0.0f;
+                height = std::clamp(height - (std::fabs(stickY) > 0.2f ? stickY * 0.02f : 0.0f), 0.3f, 2.5f);
+                if (buttons & (PAD_R1 | PAD_UP)) distance = std::max(0.25f, distance - 0.02f);
+                if (buttons & (PAD_L1 | PAD_DOWN)) distance = std::min(2.0f, distance + 0.02f);
+                const float c = std::cos(turn), sn = std::sin(turn);
+                camera.eye = {cx + (eye0[0] - cx) * distance * c - (eye0[1] - cy) * distance * sn, cy + (eye0[0] - cx) * distance * sn + (eye0[1] - cy) * distance * c,
+                              eye0[2] * distance * height};
+            } else if (orbit != 0 && !interactive) {
                 const float a = orbit * (argc > 4 ? 1.0f : static_cast<float>(frame)), c = std::cos(a), sn = std::sin(a);  // a fourth argument: a fixed angle
                 camera.eye = {cx + (eye0[0] - cx) * c - (eye0[1] - cy) * sn, cy + (eye0[0] - cx) * sn + (eye0[1] - cy) * c, eye0[2]};
             }
@@ -103,7 +133,7 @@ int main(int argc, char** argv) {
             }
             if (frame == 1) {
                 const auto& v = renderer.lastFrame();
-                std::printf("gs_lotview: vu: %zu batches, %zu corners; build %.2f s, send/wait %.2f s\n", v.vuBatches, v.vuCorners, v.vuBuild, v.vuWait);
+                std::printf("gs_lotview: vu: %zu batches, %zu corners; build %.2f s, send/wait %.2f s, uniforms %.2f s, lit lookup %.2f s\n", v.vuBatches, v.vuCorners, v.vuBuild, v.vuWait, v.uniforms, v.light);
                 std::printf("gs_lotview: primitives clipped by the EE: %zu, its corners %zu\n", renderer.lastFrame().clipped, renderer.lastFrame().eeCorners);
                 std::printf("gs_lotview: %zu vertices in the draws, lit colours: %zu kept, %zu worked out, cache %zu KiB\n", renderer.lastFrame().vertices,
                             renderer.lastFrame().litHits, renderer.lastFrame().litMisses, renderer.lastFrame().litCacheKiB);
