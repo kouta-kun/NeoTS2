@@ -25,7 +25,10 @@ constexpr std::size_t kHeaderSize = 96;
 
 Package::Package(const std::filesystem::path& path) : path_(path) {
     stream_ = openFile();
-    fileSize_ = std::filesystem::file_size(path);
+    // (the size comes from the stream: std::filesystem queries hang on the console's host filesystem)
+    stream_->seekg(0, std::ios::end);
+    fileSize_ = static_cast<std::uint64_t>(stream_->tellg());
+    stream_->seekg(0, std::ios::beg);
     load();
     stream_.reset();
 }

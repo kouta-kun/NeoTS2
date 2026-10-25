@@ -226,6 +226,7 @@ target_link_libraries(ts2content PUBLIC ts2formats ts2diag ts2paths PRIVATE proj
 
 add_library(ts2sim
     src/sim/index_code_source.cpp
+    src/sim/support_table.cpp
     src/sim/lot_world.cpp
     src/sim/lot_simulation.cpp
     src/sim/ground_click.cpp
@@ -368,9 +369,10 @@ if(PS2)
     target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
     # The simulation alone, from a simbank folder, as a console program (see tools/simmem).
-    add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp)
+    add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image pthread)
     target_compile_options(simmem PRIVATE -fexceptions)
+    target_link_options(simmem PRIVATE -Wl,--wrap=_open)
 endif()
 
 # Only the libraries above, with no window, graphics, tools or tests: for cross-compiling the engine's core for a
@@ -451,7 +453,7 @@ else()
     add_executable(bhavclosure tools/bhavclosure/main.cpp)
     target_link_libraries(bhavclosure PRIVATE ts2sim ts2scene project_warnings)
 
-    add_executable(simbank tools/simbank/main.cpp)
+    add_executable(simbank tools/simbank/main.cpp app/route_sources.cpp)
     target_link_libraries(simbank PRIVATE ts2sim ts2scene project_warnings)
 
     add_executable(simmem tools/simmem/main.cpp)

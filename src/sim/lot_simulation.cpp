@@ -72,17 +72,24 @@ LotSimulation::LotSimulation(const std::filesystem::path& install, const std::fi
                              std::function<void(const StepInfo&)> onLoadStep)
     : index_(loadCode(install, lot)), code_(index_), vm_(code_, {kMaxStepsPerRun, 64}, &world_),
       installedPacks_(content::installedPacksMask(content::findProducts(install))), motiveUpdate_(code_, installedPacks_) {
-    load(lot, &install, std::move(onLoadStep));
+    load(lot, &install, content::wantsPackage(install), content::wantTuningPackage(install), std::move(onLoadStep));
 }
 
 LotSimulation::LotSimulation(const std::vector<std::filesystem::path>& packages, std::uint32_t installedPacks, const std::filesystem::path& lot,
+                             const std::optional<std::filesystem::path>& wants, const std::optional<std::filesystem::path>& wantTuning,
                              std::function<void(const StepInfo&)> onLoadStep)
     : index_(loadPackages(packages)), code_(index_), vm_(code_, {kMaxStepsPerRun, 64}, &world_), installedPacks_(installedPacks),
       motiveUpdate_(code_, installedPacks_) {
-    load(lot, nullptr, std::move(onLoadStep));
+    load(lot, nullptr, wants, wantTuning, std::move(onLoadStep));
 }
 
-void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem::path* install, std::function<void(const StepInfo&)> onLoadStep) {
+void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem::path* install, std::optional<std::filesystem::path> wants,
+                         std::optional<std::filesystem::path> wantTuning, std::function<void(const StepInfo&)> onLoadStep) {
+    // (read first: on the PCSX2 console, opening files after the heavy reads below fails)
+    std::shared_ptr<content::WantDefinitions> wantDefs;
+    if (wants) {
+        wantDefs = std::make_shared<content::WantDefinitions>(content::loadWantDefinitions(*wants));
+    }
     vm_.onInteractionStart = [this](const SimObject& sim, const QueuedInteraction& started) { logInteractionStart(sim, started); };
     lot_ = std::make_unique<const content::Lot>(content::loadLot(lot));
     const content::Lot& saved = *lot_;
@@ -133,9 +140,9 @@ void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem
         world_.weather() = loaded.weather.value_or(weather::Weather{});
         findCharacterFiles();
     }
-    if (const auto wants = install ? content::wantsPackage(*install) : std::nullopt) {
-        auto defs = std::make_shared<content::WantDefinitions>(content::loadWantDefinitions(*wants));
-        if (const auto tuning = content::wantTuningPackage(*install)) {
+    if (wants) {
+        auto defs = std::move(wantDefs);
+        if (const auto& tuning = wantTuning) {
             const std::string text = content::loadWantTuning(*tuning);
             defs->categories = content::parseWantCategories(text);
             if (const auto influence = content::parseInfluenceCurve(text)) {

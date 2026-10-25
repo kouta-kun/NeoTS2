@@ -40,7 +40,9 @@ public:
 
     // The same from packages already gathered (a console's bank: what the game's packages and the neighborhood's characters held, under the keys
     // they had in the index) instead of an install: `installedPacks` as installedPacksMask would give it, and no Lua scripts or want definitions.
+    // `wants` and `wantTuning` are the game's want definitions and their tuning, when it has them.
     LotSimulation(const std::vector<std::filesystem::path>& packages, std::uint32_t installedPacks, const std::filesystem::path& lot,
+                  const std::optional<std::filesystem::path>& wants = std::nullopt, const std::optional<std::filesystem::path>& wantTuning = std::nullopt,
                   std::function<void(const StepInfo&)> onLoadStep = {});
 
     // Runs one tick: sleeping scripts wait out their ticks and the others run until they sleep, end
@@ -98,7 +100,8 @@ public:
 
 private:
     // The rest of the constructors' work: the world from the lot, the neighborhood, and the objects' first run. `install` is null when the code came from packages.
-    void load(const std::filesystem::path& lot, const std::filesystem::path* install, std::function<void(const StepInfo&)> onLoadStep);
+    void load(const std::filesystem::path& lot, const std::filesystem::path* install, std::optional<std::filesystem::path> wants,
+              std::optional<std::filesystem::path> wantTuning, std::function<void(const StepInfo&)> onLoadStep);
 
     content::ResourceIndex index_;
     // Character files by their Sim's GUID, gathered while the simulation is built.
