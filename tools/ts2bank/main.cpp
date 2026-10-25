@@ -39,6 +39,7 @@ struct TextureOptions {
     unsigned maxSide = 256;
     double paletteError = 8;  // RMS levels a 4-bit palette may change a texture by; half that for 8-bit
     bool dither = false;
+    std::string sheetDir;  // when set: pairs of raw RGBA files (original, converted) of the textures worth looking at, and a manifest
 };
 
 struct TextureStats {
@@ -120,6 +121,7 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
             for (std::size_t i = 3; i < fitted.rgba.size(); i += 4) {
                 alpha = alpha || fitted.rgba[i] != 255;
             }
+            ts2::scene::Image shown;  // what the console texture looks like
             ConsoleTexture out;
             out.width = fitted.width;
             out.height = fitted.height;
@@ -131,6 +133,7 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
                 error = render::imageError(fitted, reduced);
                 if (error <= (bits == 4 ? options.paletteError : options.paletteError / 2) && toIndexed(reduced, bits, out)) {
                     ++stats.byBits[bits == 4 ? 0 : 1];
+                    shown = reduced;
                     done = true;
                     break;
                 }
@@ -139,8 +142,17 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
                 out.bits = 32;
                 out.palette.clear();
                 out.texels = fitted.rgba;
+                shown = fitted;
                 error = 0;
                 ++stats.byBits[2];
+            }
+            if (!options.sheetDir.empty() && (out.bits == 32 || error >= 5 || stats.count % 25 == 0)) {
+                const std::string base = options.sheetDir + "/" + std::to_string(stats.count);
+                std::ofstream(base + "_orig.rgba", std::ios::binary).write(reinterpret_cast<const char*>(fitted.rgba.data()), std::streamsize(fitted.rgba.size()));
+                std::ofstream(base + "_conv.rgba", std::ios::binary).write(reinterpret_cast<const char*>(shown.rgba.data()), std::streamsize(shown.rgba.size()));
+                std::ofstream(options.sheetDir + "/manifest.tsv", std::ios::app)
+                    << stats.count << '\t' << name << '\t' << fitted.width << '\t' << fitted.height << '\t' << out.bits << '\t' << error
+                    << '\t' << info.width << 'x' << info.height << '\n';
             }
             stats.errorSum += error;
             stats.errorMax = std::max(stats.errorMax, error);
@@ -183,6 +195,8 @@ int main(int argc, char** argv) {
             textures.maxSide = static_cast<unsigned>(std::stoul(argv[++i]));
         } else if (a == "--palette-error" && i + 1 < argc) {
             textures.paletteError = std::stod(argv[++i]);
+        } else if (a == "--sheet-dir" && i + 1 < argc) {
+            textures.sheetDir = argv[++i];
         } else if (a == "--dither") {
             textures.dither = true;
         } else {
