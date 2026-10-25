@@ -17,3 +17,6 @@ include $(PS2SDK)/samples/Makefile.eeglobal_cpp
 
 gs_hello.elf: gs_hello.o
 	$(EE_CXX) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $^ $(EE_LDFLAGS) -lgskit -ldmakit $(EE_LIBS)
+
+host_read.elf: host_read.o
+	$(EE_CXX) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $^ $(EE_LDFLAGS) $(EE_LIBS)

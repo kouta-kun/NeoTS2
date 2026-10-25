@@ -431,3 +431,20 @@ survive, soft curves get faceted). A stricter cap keeps more: 0.003 leaves 75%, 
 
 The renderer will be a `GsRenderer : RendererState` in `src/render/ps2/`, carrying out `FramePlan` with gsKit. The EE cannot build a lot
 scene itself (the builder peaks at 112 MiB), so a lot is baked by the converter into a console scene file and loaded as it is.
+
+### First picture from the gsKit renderer (2026-10-25)
+
+`src/render/ps2/gs_renderer.*` (`GsRenderer : RendererState`, built by CMake only for the PS2: `build-ps2`, target `gs_lotview`) draws a
+baked lot (`ts2bake` -> `readBakedScene`) in PCSX2: N001 Lot 80 (33,244 triangles, 18 images, 4-bit textures) shows its ground, road,
+kerb and a lamp, perspective-correct, Z-buffered. How it works now:
+- `FramePlan` collects and orders the draws; `vertexColors` (moved out of the GL1 code into `render/vertex_colors.*`) lights each vertex
+  on the CPU with the colour scale 0.5, which is also how the GS reads a vertex colour (0x80 = 1).
+- Vertices are transformed and clipped on the EE (Sutherland-Hodgman against near, far, a 3x guard band and w > 0), culled by winding,
+  and sent as A+D GIF packets with ST and Q (so texturing is perspective-correct), 3000 triangles to a packet (a GIF tag counts at most
+  32,767 quadwords; 5,000 hung the GS).
+- Textures go through gsKit's texture manager (LRU in the VRAM left after two 640x448 32-bit buffers and a 24-bit Z buffer, about 0.75 MB);
+  4-bit and 8-bit ones carry their palette (8-bit swizzled), alpha halved for the GS. Blend, additive, alpha test and Z mask are set per
+  draw. Not yet: mip levels, skinned meshes, terrain/roads/water/sky, sprites, light-map multiply.
+- Z is 24-bit: depth here runs 1 at the near plane to 0 at the far one, and a 16-bit Z buffer could not separate surfaces 0.01 apart.
+- Speed in PCSX2 (software GS on llvmpipe, so only the EE side means anything): about 1.7 s a frame for 31.5k drawn triangles, all on the EE.
+  That is the cost the vector unit is for; nothing here is measured on a console.

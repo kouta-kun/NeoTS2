@@ -37,4 +37,15 @@ struct ConsoleTexture {
     static unsigned levelCount(std::uint32_t width, std::uint32_t height);
 };
 
+// A console texture read in place: the sizes, and where the palette and the texels (all levels) are in the bytes.
+struct ConsoleTextureView {
+    std::uint32_t width = 0, height = 0;
+    unsigned bits = 32, mips = 1;
+    bool hasAlpha = false;
+    std::span<const std::uint8_t> palette;  // RGBA entries
+    std::span<const std::uint8_t> texels;
+    // Throws std::runtime_error when the bytes are not a console texture.
+    static ConsoleTextureView of(std::span<const std::uint8_t> bytes);
+};
+
 } // namespace ts2::content

@@ -83,4 +83,29 @@ ConsoleTexture ConsoleTexture::parse(std::span<const std::uint8_t> bytes) {
     return t;
 }
 
+ConsoleTextureView ConsoleTextureView::of(std::span<const std::uint8_t> bytes) {
+    Header h;
+    if (bytes.size() < sizeof h) {
+        throw std::runtime_error("not a console texture: too short");
+    }
+    std::memcpy(&h, bytes.data(), sizeof h);
+    if (h.magic != ConsoleTexture::kMagic || (h.bits != 4 && h.bits != 8 && h.bits != 32)) {
+        throw std::runtime_error("not a console texture: bad header");
+    }
+    ConsoleTextureView v;
+    v.width = h.width;
+    v.height = h.height;
+    v.bits = h.bits;
+    v.hasAlpha = (h.flags & 1) != 0;
+    v.mips = (h.flags >> 4) + 1u;
+    const std::size_t paletteBytes = static_cast<std::size_t>(h.paletteSize) * 4;
+    const std::size_t texelBytes = ConsoleTexture::texelBytes(v.width, v.height, v.bits, v.mips);
+    if (sizeof h + paletteBytes + texelBytes != bytes.size()) {
+        throw std::runtime_error("not a console texture: wrong size");
+    }
+    v.palette = bytes.subspan(sizeof h, paletteBytes);
+    v.texels = bytes.subspan(sizeof h + paletteBytes, texelBytes);
+    return v;
+}
+
 } // namespace ts2::content

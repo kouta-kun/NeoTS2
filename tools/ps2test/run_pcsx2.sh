@@ -6,7 +6,7 @@ set -u
 elf=$(realpath "$1"); wait_s=${2:-8}; out=$3; log=${4:-/dev/null}
 ini=$HOME/.config/PCSX2/inis/PCSX2.ini; backup=$(mktemp)
 cp "$ini" "$backup"; trap 'cp "$backup" "$ini"; rm -f "$backup"; kill $xpid $pid 2>/dev/null' EXIT
-sed -i 's/^Renderer = .*/Renderer = 13/; s/^Adapter = .*/Adapter = llvmpipe (LLVM 23.1.3, 256 bits)/' "$ini"
+sed -i 's/^HostFs = .*/HostFs = true/; s/^Renderer = .*/Renderer = 13/; s/^Adapter = .*/Adapter = llvmpipe (LLVM 23.1.3, 256 bits)/' "$ini"
 display=:$((70 + RANDOM % 20))
 Xvfb $display -screen 0 1024x768x24 >/dev/null 2>&1 & xpid=$!
 sleep 1

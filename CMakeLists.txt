@@ -349,8 +349,19 @@ endif()
 
 # What every renderer shares, apart from any graphics API: the CPU side of a scene, culling and
 # draw order, and the numbers each draw's shaders are given.
-add_library(ts2renderplan src/render/cpu_light.cpp src/render/fixed_layout.cpp src/render/frame_plan.cpp src/render/gl_subset.cpp src/render/mesh_pack.cpp src/render/shared_state.cpp src/render/terrain_mesh.cpp src/render/texture_fit.cpp src/render/texture_convert.cpp src/render/console_scene.cpp)
+add_library(ts2renderplan src/render/cpu_light.cpp src/render/fixed_layout.cpp src/render/frame_plan.cpp src/render/gl_subset.cpp src/render/mesh_pack.cpp src/render/shared_state.cpp src/render/vertex_colors.cpp src/render/terrain_mesh.cpp src/render/texture_fit.cpp src/render/texture_convert.cpp src/render/console_scene.cpp)
 target_link_libraries(ts2renderplan PUBLIC ts2scene PRIVATE project_warnings)
+
+# The PlayStation 2's renderer and a program that shows a baked lot with it (see docs/ps2-port-plan.md).
+if(PS2)
+    add_library(ts2gs src/render/ps2/gs_renderer.cpp)
+    target_include_directories(ts2gs PUBLIC $ENV{PS2DEV}/gsKit/include)
+    target_link_libraries(ts2gs PUBLIC ts2renderplan PRIVATE project_warnings)
+    add_executable(gs_lotview tools/gs_lotview/main.cpp)
+    target_link_directories(gs_lotview PRIVATE $ENV{PS2DEV}/gsKit/lib)
+    target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit)
+    target_compile_options(gs_lotview PRIVATE -fexceptions)
+endif()
 
 # Only the libraries above, with no window, graphics, tools or tests: for cross-compiling the engine's core for a
 # console (see cmake/ps2.cmake and docs/ps2-port-plan.md).
