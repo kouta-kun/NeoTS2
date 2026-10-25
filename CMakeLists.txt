@@ -444,6 +444,9 @@ else()
     add_executable(uidump tools/uidump/main.cpp)
     target_link_libraries(uidump PRIVATE ts2content project_warnings)
 
+    add_executable(bhavclosure tools/bhavclosure/main.cpp)
+    target_link_libraries(bhavclosure PRIVATE ts2sim ts2scene project_warnings)
+
     add_executable(simmem tools/simmem/main.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene project_warnings)
 
