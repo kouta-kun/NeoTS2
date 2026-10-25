@@ -375,3 +375,8 @@ Where it goes (N001): texture pixel data (type `0xED534136`, 1,127 resources) 16
 That is what the converter has to shrink: textures to console sizes/palettes, meshes to the triangle budget. It fits the disc
 many times over; the point is what a lot reads at once. Not yet in the bank: what the simulation reads (behaviours, object
 code), character files, UI.
+
+**One base bank from every lot** (all 69 lots of N001-N003 and the Tutorial, one `ts2bank` run, 29 s, peak 1.3 GiB):
+14,709 resources, 461 MiB. Texture pixel data (`0xED534136`, 1,736 resources) 316 MiB, meshes (`GMDC`, 1,097) 97 MiB,
+the rest 48 MiB. Against the per-neighborhood banks (207-249 MiB each) that is the real size of what the base game's saved lots
+use; it grows only with lots that bring other objects. Unconverted.
