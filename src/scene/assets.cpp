@@ -126,6 +126,22 @@ void Assets::useCharacterGroup(std::uint32_t group) {
     characterGroup_ = group;
 }
 
+void Assets::observeReads(ReadObserver visit) {
+    const auto attach = [&](content::ResourceIndex& index, const char* source) {
+        if (!visit) {
+            index.observer = nullptr;
+            return;
+        }
+        index.observer = [visit, source](const content::ResourceIndex::Resource& r, const std::vector<std::uint8_t>& bytes) {
+            visit(source, r.entry.key, bytes);
+        };
+    };
+    attach(models_, "models");
+    attach(objects_, "objects");
+    attach(catalog_, "catalog");
+    attach(skins_, "skins");
+}
+
 void Assets::readSkins() {
     if (!skinsRead_) {
         skinsRead_ = true;

@@ -351,3 +351,27 @@ relocations (several LO16 sharing one HI16), which liberl probably pairs wrongly
 Conclusion: ERL is not a safe vehicle for the editor overlay as it stands. Keep ELF-per-mode (a separate
 executable per neighbourhood/lot/build mode, switched by loading it) as the plan, and treat ERL as
 optional (fixing liberl's relocation handling would be the work to make it viable).
+
+## Native OS X saves, and the converter's first step (2026-10-24)
+
+**Base-game lots against the OS X install** (`/srv/files/s2save-osx`, 3 neighborhoods + the tutorial): all 52 lots of N001-N003
+build a scene with `lotscene --stub-pixels` and no failures. Peak heap 26-137 MiB (pixels stubbed), geometry 0-999k triangles
+if every instance were in view (median about 140k). The only asset warning, on 5 lots, is `treebamboo-bump` (a bump map the base
+game does not have; unused on the console anyway). So the base-game lot loads cleanly; nothing there is missing.
+
+**`ts2bank`** (`tools/ts2bank`, format in `src/content/bank.hpp`): builds the scenes of the lots it is given, records every
+resource read through `Assets` (`Assets::observeReads`) and writes them to one bank file: 32-byte entries sorted by key (binary
+search, no allocation), blobs 16-byte aligned and decompressed. `Bank` reads it in place. Round trip verified. What a bank holds,
+before any conversion:
+
+| Lots | Resources | Data |
+|---|---|---|
+| N001 Lot 11 (567k triangles) | 5,038 | 76 MiB |
+| all of N001 (26 lots) | 10,860 | 248 MiB |
+| all of N002 (11 lots) | 9,528 | 225 MiB |
+| all of N003 (26 lots) | 9,043 | 207 MiB |
+
+Where it goes (N001): texture pixel data (type `0xED534136`, 1,127 resources) 168 MiB; meshes (`GMDC`) 63 MiB; the rest under 10 MiB.
+That is what the converter has to shrink: textures to console sizes/palettes, meshes to the triangle budget. It fits the disc
+many times over; the point is what a lot reads at once. Not yet in the bank: what the simulation reads (behaviours, object
+code), character files, UI.

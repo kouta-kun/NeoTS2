@@ -44,7 +44,11 @@ const ResourceIndex::Resource* ResourceIndex::find(const dbpf::ResourceKey& key)
 }
 
 std::vector<std::uint8_t> ResourceIndex::read(const Resource& resource) {
-    return use(resource.package).read(resource.entry);
+    std::vector<std::uint8_t> bytes = use(resource.package).read(resource.entry);
+    if (observer) {
+        observer(resource, bytes);
+    }
+    return bytes;
 }
 
 std::vector<std::uint8_t> ResourceIndex::readRaw(const Resource& resource) {

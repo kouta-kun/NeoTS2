@@ -196,6 +196,7 @@ target_link_libraries(ts2formats PRIVATE project_warnings)
 
 add_library(ts2content
     src/content/animation_lists.cpp
+    src/content/bank.cpp
     src/content/install.cpp
     src/content/save_folder.cpp
     src/content/thumbnail_merge.cpp
@@ -430,6 +431,8 @@ else()
     # Builds a lot's scene without a window and reports its memory and time (see the PlayStation 2 plan).
     add_executable(lotscene tools/lotscene/main.cpp app/lot_light.cpp)
     target_link_libraries(lotscene PRIVATE ts2sim ts2scene project_warnings)
+    add_executable(ts2bank tools/ts2bank/main.cpp)
+    target_link_libraries(ts2bank PRIVATE ts2scene project_warnings)
 
     add_executable(simrun tools/simrun/main.cpp app/route_sources.cpp)
     target_link_libraries(simrun PRIVATE ts2sim ts2scene project_warnings)

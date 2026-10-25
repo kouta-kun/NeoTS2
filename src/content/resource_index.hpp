@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -32,6 +33,9 @@ public:
     const Resource* find(const dbpf::ResourceKey& key) const;
     std::vector<std::uint8_t> read(const Resource& resource);
     std::vector<std::uint8_t> readRaw(const Resource& resource);
+
+    // Called with each resource `read` returns (decompressed), for tools that gather what a scene needs.
+    std::function<void(const Resource&, const std::vector<std::uint8_t>&)> observer;
 
     std::size_t packageCount() const { return packages_.size(); }
     const std::filesystem::path& packagePath(std::size_t package) const { return paths_[package]; }

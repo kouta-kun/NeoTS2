@@ -121,6 +121,11 @@ public:
 
     const content::BuildScripts& buildScripts() const { return scripts_; }
 
+    // Calls `visit` with every resource read from the game's packages from now on, and the set it came from
+    // ("models", "objects", "catalog", "skins"): how tools find what a scene needs. Without a function, stops.
+    using ReadObserver = std::function<void(const char* source, const dbpf::ResourceKey&, const std::vector<std::uint8_t>&)>;
+    void observeReads(ReadObserver visit);
+
     // Problems met while loading (missing textures, unreadable files), for tools to report.
     std::vector<std::string> warnings;
 
