@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
         SleepThread();
     }
     try {
-        std::vector<std::uint8_t> head(ts2::render::kBakedPreambleSize);
+        ts2::render::AlignedBytes head(ts2::render::kBakedPreambleSize);
         if (std::fread(head.data(), 1, head.size(), file) != head.size()) {
             throw std::runtime_error("short read of the preamble");
         }
@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
         const ts2::render::Vec3 eye0 = camera.eye;
         for (int frame = 0; frame < 4; ++frame) {
             if (orbit != 0) {
-                const float a = orbit * static_cast<float>(frame), c = std::cos(a), sn = std::sin(a);
+                const float a = orbit * (argc > 4 ? 1.0f : static_cast<float>(frame)), c = std::cos(a), sn = std::sin(a);  // a fourth argument: a fixed angle
                 camera.eye = {cx + (eye0[0] - cx) * c - (eye0[1] - cy) * sn, cy + (eye0[0] - cx) * sn + (eye0[1] - cy) * c, eye0[2]};
             }
             if (!renderer.draw(camera)) {

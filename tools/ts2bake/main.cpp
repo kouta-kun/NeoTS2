@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
         // The compact form (what the console reads) must expand to what the full read gives, primitive by primitive.
         ts2::render::BakedMeshes compact;
-        std::vector<std::uint8_t> head(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(ts2::render::bakedHeadSize(bytes)));
+        ts2::render::AlignedBytes head(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(ts2::render::bakedHeadSize(bytes)));
         const ts2::scene::Scene shell = ts2::render::readBakedHeadCompact(std::move(head), compact);
         std::size_t checked = 0, wrong = 0;
         ts2::render::ExpandedPrimitive expanded;
@@ -81,20 +81,19 @@ int main(int argc, char** argv) {
                 reference.resize(full.positions.size() / 3 * ts2::render::kVertexFloats);
                 ts2::render::packPrimitiveVertices(full, reference.data());
                 ++checked;
-                // The view must give the same positions and indices as the expansion.
+                // The view must give the same corners as the full read: the padding repeats the last corner, and 16-byte alignment holds.
                 ts2::render::PrimitiveView view;
                 ts2::render::viewPrimitive(compact, compact.meshes[m][k], view);
-                bool viewOk = view.vertices == full.positions.size() / 3 && view.indices == full.indices.size();
-                for (std::size_t i = 0; viewOk && i < view.vertices * 3; ++i) {
+                const std::size_t real = full.positions.size() / 3;
+                bool viewOk = view.corners >= real && view.corners % 12 == 0 && reinterpret_cast<std::uintptr_t>(view.positions) % 16 == 0 &&
+                              reinterpret_cast<std::uintptr_t>(view.normals) % 16 == 0 && (view.uvs == nullptr || reinterpret_cast<std::uintptr_t>(view.uvs) % 16 == 0);
+                for (std::size_t i = 0; viewOk && i < real * 3; ++i) {
                     const float lo = view.lo[i % 3], hi = view.hi[i % 3];
-                    viewOk = std::abs(lo + (hi - lo) * (static_cast<float>(view.positions[i]) / 65535.0f) - full.positions[i]) < 1e-5f * (1 + std::abs(hi - lo));
-                }
-                for (std::size_t i = 0; viewOk && i < view.indices; ++i) {
-                    viewOk = (view.wideIndices ? static_cast<const std::uint32_t*>(view.indexData)[i] : static_cast<const std::uint16_t*>(view.indexData)[i]) == full.indices[i];
+                    viewOk = std::abs(lo + (hi - lo) * (static_cast<float>(view.positions[(i / 3) * 4 + i % 3]) / 65535.0f) - full.positions[i]) < 1e-5f * (1 + std::abs(hi - lo));
                 }
                 wrong += viewOk ? 0 : 1;
-                if (expanded.vertices != reference || expanded.indices != full.indices || compact.meshes[m][k].vertices != full.positions.size() / 3 ||
-                    compact.meshes[m][k].indices != full.indices.size()) {
+                if (expanded.vertices != reference || expanded.indices != full.indices || compact.meshes[m][k].vertices < full.positions.size() / 3 ||
+                    compact.meshes[m][k].vertices % 12 != 0) {
                     ++wrong;
                 }
             }

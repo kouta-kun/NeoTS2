@@ -521,3 +521,11 @@ EE build 0.12 s, lighting lookup 0.06, DMA waits 0.04 and the rest is PCSX2 runn
 - *Lit-colour cache:* the key is now generation counters (the renderer's setters bump a global count for lighting changes and a per-instance count for place,
   materials and lights), not a hash of the uniforms; that hash covered the eye position, so a moving camera would have missed the cache on every draw. With the camera orbiting
   the lot every frame, all 3,295 draws still hit the cache: 0.32 s a frame.
+
+**Baked soup (format v6, 2026-10-25).** `bakeScene` writes each primitive as triangle soup, as the VU1 path wants it (three corners a triangle, padded to a multiple
+of 12 with degenerate triangles; positions 4 x 16 bits over each axis's range, texture coordinates 2 x 16, normals 4 x 8, optional colour/alpha and light-map
+coordinates, joints and weights for skinned ones, each array 16-byte aligned), and the head is held in a 16-byte aligned buffer (`AlignedBytes`, preamble 16 bytes, the
+image area still on a 16-byte boundary), so the renderer points the DMA straight at the head: no copy made at load. N001 Lot 11: file 21.1 MiB (meshes 4.3 MiB: soup
+costs 3.0 corners a triangle against 2.2 vertices indexed), heap in use after loading **8.2 MiB** (was 11.0 with the soups built at load), load time 0.1 s (was 0.2).
+A bug that the orbiting camera showed: a frame that ends on a blended draw leaves the Z write mask on, so the next frame's clear did not clear Z and stale depth
+hid triangles; the mask is reset before each clear.

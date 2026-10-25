@@ -138,29 +138,6 @@ struct GsTexture {
     GsTexture& operator=(const GsTexture&) = delete;
 };
 
-// A primitive as triangle soup, three corners a triangle and no indices, in the arrays the VIF unpacks into the VU1's memory (see vu1_soup.vsm).
-// Built from the baked primitive when the scene is prepared. The arrays are 16-byte aligned and padded to a multiple of 12 corners with
-// degenerate triangles so that every unpack covers whole quadwords.
-struct Soup {
-    unsigned corners = 0;
-    float lo[3]{}, hi[3]{};
-    float uvLo = 0, uvHi = 0;
-    u16* pos = nullptr;        // x, y, z, 0 over [lo, hi]
-    u16* uv = nullptr;         // u, v over [uvLo, uvHi]
-    std::int8_t* normal = nullptr;  // x, y, z, 0 (/127)
-    u8* vc = nullptr;          // r, g, b, a of the vertex colour and alpha, or null
-    u16* luv = nullptr;        // light-map coordinates (/65535), or null
-    ~Soup() {
-        std::free(pos);
-        std::free(uv);
-        std::free(normal);
-        std::free(vc);
-        std::free(luv);
-    }
-    Soup() = default;
-    Soup(const Soup&) = delete;
-    Soup& operator=(const Soup&) = delete;
-};
 
 struct GsRenderer::VuColors {
     std::uint64_t generation = 0;  // the lighting's and the object's counts it was made with (see GsRenderer::touch)
@@ -210,7 +187,10 @@ struct GsRenderer::VuSlot {
 };
 
 struct GsRenderer::Gpu {
-    std::vector<std::unique_ptr<Soup>> soups;  // by GpuPrimitive::firstVertex, like refs
+    std::vector<PrimitiveView> soups;  // by GpuPrimitive::firstVertex, like refs: where each primitive's corners lie in the head
+    u16* zeroUvs = nullptr;            // texture coordinates for primitives that have none
+    unsigned zeroUvCorners = 0;
+    ~Gpu() { std::free(zeroUvs); }
     std::vector<GpuMesh> meshes;
     MeshData data;
     bool baked = false;                              // meshes are expanded from `bakedMeshes` when drawn (see prepareBaked)
@@ -435,71 +415,26 @@ IRenderer::Prepared GsRenderer::prepareBaked(scene::Scene scene, BakedMeshes mes
         }
         g.meshes.push_back(std::move(gm));
     }
-    // Each primitive as triangle soup, for the vector unit.
+    // The primitives' corners are already soup in the head: note where each lies. The DMA reads them from memory.
     g.soups.resize(g.refs.size());
+    unsigned maxCorners = 0;
     for (std::size_t r = 0; r < g.refs.size(); ++r) {
-        const BakedPrimitive& b = *g.refs[r];
-        if (b.skinned) {
+        if (g.refs[r]->skinned) {
             continue;
         }
-        PrimitiveView view;
-        viewPrimitive(g.bakedMeshes, b, view);
-        if (view.positions == nullptr || view.indexData == nullptr || view.indices < 3) {
-            continue;
+        viewPrimitive(g.bakedMeshes, *g.refs[r], g.soups[r]);
+        if (g.soups[r].uvs == nullptr) {
+            maxCorners = std::max<unsigned>(maxCorners, g.soups[r].corners);
         }
-        const unsigned real = view.indices / 3 * 3;
-        const unsigned corners = (real + 11) / 12 * 12;
-        auto soup = std::make_unique<Soup>();
-        soup->corners = corners;
-        std::copy_n(view.lo, 3, soup->lo);
-        std::copy_n(view.hi, 3, soup->hi);
-        soup->uvLo = view.uvLo;
-        soup->uvHi = view.uvHi;
-        soup->pos = static_cast<u16*>(memalign(16, std::size_t{corners} * 8));
-        soup->uv = static_cast<u16*>(memalign(16, std::size_t{corners} * 4));
-        soup->normal = static_cast<std::int8_t*>(memalign(16, std::size_t{corners} * 4));
-        const bool hasVc = view.colors != nullptr || view.alphas != nullptr;
-        if (hasVc) {
-            soup->vc = static_cast<u8*>(memalign(16, std::size_t{corners} * 4));
-        }
-        if (view.lightUvs) {
-            soup->luv = static_cast<u16*>(memalign(16, std::size_t{corners} * 4));
-        }
-        if (!soup->pos || !soup->uv || !soup->normal || (hasVc && !soup->vc) || (view.lightUvs && !soup->luv)) {
-            continue;  // out of memory: the primitive is not drawn
-        }
-        const auto* index16 = static_cast<const std::uint16_t*>(view.indexData);
-        const auto* index32 = static_cast<const std::uint32_t*>(view.indexData);
-        for (unsigned c = 0; c < corners; ++c) {
-            const unsigned source = c < real ? c : real - 1;
-            const std::uint32_t v = view.wideIndices ? index32[source] : index16[source];
-            if (v >= view.vertices) {
-                continue;
-            }
-            soup->pos[c * 4] = view.positions[v * 3];
-            soup->pos[c * 4 + 1] = view.positions[v * 3 + 1];
-            soup->pos[c * 4 + 2] = view.positions[v * 3 + 2];
-            soup->pos[c * 4 + 3] = 0;
-            soup->uv[c * 2] = view.uvs ? view.uvs[v * 2] : 0;
-            soup->uv[c * 2 + 1] = view.uvs ? view.uvs[v * 2 + 1] : 0;
-            for (int k = 0; k < 3; ++k) {
-                soup->normal[c * 4 + static_cast<unsigned>(k)] = view.normals ? view.normals[v * 3 + static_cast<unsigned>(k)] : (k == 2 ? 127 : 0);
-            }
-            soup->normal[c * 4 + 3] = 0;
-            if (soup->vc) {
-                for (int k = 0; k < 3; ++k) {
-                    soup->vc[c * 4 + static_cast<unsigned>(k)] = view.colors ? view.colors[v * 3 + static_cast<unsigned>(k)] : 255;
-                }
-                soup->vc[c * 4 + 3] = view.alphas ? view.alphas[v] : 255;
-            }
-            if (soup->luv) {
-                soup->luv[c * 2] = view.lightUvs[v * 2];
-                soup->luv[c * 2 + 1] = view.lightUvs[v * 2 + 1];
-            }
-        }
-        g.soups[r] = std::move(soup);
     }
-    FlushCache(0);  // the DMA reads the soup arrays from memory
+    if (maxCorners > 0) {
+        g.zeroUvs = static_cast<u16*>(memalign(16, std::size_t{maxCorners} * 4));
+        if (g.zeroUvs) {
+            std::memset(g.zeroUvs, 0, std::size_t{maxCorners} * 4);
+        }
+        g.zeroUvCorners = maxCorners;
+    }
+    FlushCache(0);  // the DMA reads the head (and the zero array) from memory
 
     g.textures.resize(scene.images.size());
     g.lastUsed.assign(scene.images.size(), 0);
@@ -621,8 +556,12 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         if (p.skinned || !gpu_->baked || p.firstVertex >= gpu_->soups.size()) {
             continue;
         }
-        const Soup* soup = gpu_->soups[p.firstVertex].get();
-        if (soup == nullptr) {
+        const PrimitiveView* soup = &gpu_->soups[p.firstVertex];
+        if (soup->positions == nullptr || soup->corners == 0) {
+            continue;
+        }
+        const u16* uvArray = soup->uvs ? soup->uvs : gpu_->zeroUvs;
+        if (uvArray == nullptr) {
             continue;
         }
         const scene::Material* m = d.material;
@@ -689,16 +628,16 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                         const unsigned c = start + i;
                         float* row = &rows_[std::size_t{i} * kVertexFloats];
                         for (int k = 0; k < 3; ++k) {
-                            row[k] = soup->lo[k] + range[k] * soup->pos[c * 4 + static_cast<unsigned>(k)];
-                            row[3 + k] = soup->normal[c * 4 + static_cast<unsigned>(k)] * (1.0f / 127.0f);
+                            row[k] = soup->lo[k] + range[k] * soup->positions[c * 4 + static_cast<unsigned>(k)];
+                            row[3 + k] = soup->normals[c * 4 + static_cast<unsigned>(k)] * (1.0f / 127.0f);
                         }
-                        row[6] = soup->uvLo + uvRange * soup->uv[c * 2];
-                        row[7] = soup->uvLo + uvRange * soup->uv[c * 2 + 1];
-                        row[8] = soup->vc ? soup->vc[c * 4 + 3] * (1.0f / 255.0f) : 1.0f;
-                        row[9] = soup->luv ? soup->luv[c * 2] * (1.0f / 65535.0f) : 0.0f;
-                        row[10] = soup->luv ? soup->luv[c * 2 + 1] * (1.0f / 65535.0f) : 0.0f;
+                        row[6] = soup->uvLo + uvRange * uvArray[c * 2];
+                        row[7] = soup->uvLo + uvRange * uvArray[c * 2 + 1];
+                        row[8] = soup->colors ? soup->colors[c * 4 + 3] * (1.0f / 255.0f) : 1.0f;
+                        row[9] = soup->lightUvs ? soup->lightUvs[c * 2] * (1.0f / 65535.0f) : 0.0f;
+                        row[10] = soup->lightUvs ? soup->lightUvs[c * 2 + 1] * (1.0f / 65535.0f) : 0.0f;
                         for (int k = 0; k < 3; ++k) {
-                            row[11 + k] = soup->vc ? soup->vc[c * 4 + static_cast<unsigned>(k)] * (1.0f / 255.0f) : 1.0f;
+                            row[11 + k] = soup->colors ? soup->colors[c * 4 + static_cast<unsigned>(k)] * (1.0f / 255.0f) : 1.0f;
                         }
                         row[14] = row[15] = row[16] = 0;
                     }
@@ -831,7 +770,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
             const bool cull = !(m && m->doubleSided);
             const auto corner = [&](unsigned c) {
-                const float ux = soup->lo[0] + scale[0] * soup->pos[c * 4], uy = soup->lo[1] + scale[1] * soup->pos[c * 4 + 1], uz = soup->lo[2] + scale[2] * soup->pos[c * 4 + 2];
+                const float ux = soup->lo[0] + scale[0] * soup->positions[c * 4], uy = soup->lo[1] + scale[1] * soup->positions[c * 4 + 1], uz = soup->lo[2] + scale[2] * soup->positions[c * 4 + 2];
                 ClipVertex v;
                 v.x = r[0] * ux + r[1] * uy + r[2] * uz + r[3];
                 v.y = r[4] * ux + r[5] * uy + r[6] * uz + r[7];
@@ -841,8 +780,8 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                 v.g = colours[c * 4 + 1];
                 v.b = colours[c * 4 + 2];
                 v.a = colours[c * 4 + 3];
-                v.u = soup->uvLo + uvScale * soup->uv[c * 2];
-                v.v = soup->uvLo + uvScale * soup->uv[c * 2 + 1];
+                v.u = soup->uvLo + uvScale * uvArray[c * 2];
+                v.v = soup->uvLo + uvScale * uvArray[c * 2 + 1];
                 return v;
             };
             slot.eeVertices.clear();
@@ -975,8 +914,8 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             const unsigned first = b * kBatchCorners;
             chain[t_++] = {dmaRef(header, 7), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, true), 7, kUnpackV4_32)};
             chain[t_++] = {dmaRef(&slot.tags[b < fullBatches ? 0 : 1], 1), vifCode(0, 0, kVifNop), vifCode(unpackAt(7, false, true), 1, kUnpackV4_32)};
-            chain[t_++] = {dmaRef(&soup->pos[first * 4], n / 2), vifCode(3 | (1 << 8), 0, kVifStcycl), vifCode(unpackAt(kHeaderQw + 2, true, true), n, kUnpackV4_16)};
-            chain[t_++] = {dmaRef(&soup->uv[first * 2], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(kHeaderQw + 0, true, true), n, kUnpackV2_16)};
+            chain[t_++] = {dmaRef(&soup->positions[first * 4], n / 2), vifCode(3 | (1 << 8), 0, kVifStcycl), vifCode(unpackAt(kHeaderQw + 2, true, true), n, kUnpackV4_16)};
+            chain[t_++] = {dmaRef(&uvArray[first * 2], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(kHeaderQw + 0, true, true), n, kUnpackV2_16)};
             chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(kHeaderQw + 1, true, true), n, kUnpackV4_8)};
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifMscal)};
             ++frame_.vuBatches;
@@ -1000,6 +939,8 @@ bool GsRenderer::draw(const Camera& camera) {
     frame_ = {};
     ++frameNumber_;
     const FrameView f = FrameView::make(camera, gs_->Width, gs_->Height);
+    // The last draw of the last frame may have masked Z writes (blended surfaces do); the clear writes Z as well and must be let.
+    ad(gs_, GS_SETREG_ZBUF_1(gs_->ZBuffer / 8192, gs_->PSMZ, 0), GS_ZBUF_1);
     gsKit_clear(gs_, GS_SETREG_RGBAQ(static_cast<int>(clear_[0] * 255), static_cast<int>(clear_[1] * 255), static_cast<int>(clear_[2] * 255), 0x80, 0));
     // The clear goes out and is done before anything is kicked from the VU1 (two paths into the GIF are not ordered against each other).
     gsKit_queue_exec(gs_);

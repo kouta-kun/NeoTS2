@@ -14,13 +14,14 @@ namespace ts2::render {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x31435343;  // "CSC1"
-constexpr std::uint32_t kVersion = 5;
+constexpr std::uint32_t kVersion = 6;
 
 class Out {
 public:
     void u8(std::uint8_t v) { bytes.push_back(v); }
     void u16(std::uint16_t v) { raw(&v, 2); }
     void align4() { while (bytes.size() % 4 != 0) bytes.push_back(0); }
+    void align16() { while (bytes.size() % 16 != 0) bytes.push_back(0); }
     void u32(std::uint32_t v) { raw(&v, 4); }
     void i32(std::int32_t v) { raw(&v, 4); }
     void f32(float v) { raw(&v, 4); }
@@ -75,7 +76,9 @@ public:
     }
     std::size_t position() const { return pos_; }
     void align4() { skip((4 - pos_ % 4) % 4); }
+    void align16() { skip((16 - pos_ % 16) % 16); }
     const std::uint8_t* here() const { return data_.data() + pos_; }
+    const std::uint8_t* base() const { return data_.data(); }
 
 private:
     std::span<const std::uint8_t> data_;
@@ -268,57 +271,212 @@ std::vector<float> readPositions(In& in) {
     return v;
 }
 
+// A primitive is stored as triangle soup (see PrimitiveView): a 16-byte header (material, corners, real corners, flags), the ranges (eight floats),
+// then the arrays one after the other. Corners are padded to a multiple of 12 by repeating the last one.
+enum SoupFlags : std::uint32_t { kSoupSkinned = 1, kSoupColours = 2, kSoupLightUvs = 4, kSoupUvs = 8 };
+
 void writePrimitive(Out& o, const scene::Primitive& p) {
-    o.align4();
-    o.i32(p.material);
-    o.str(p.group);
-    writePositions(o, p.positions);
-    writeUnit(o, p.normals, true, false);
-    writeQuantized(o, p.uvs);
-    writeUnit(o, p.alphas, false, false);
-    writeUnit(o, p.colors, false, false);
-    writeUnit(o, p.lightUvs, false, true);
-    writeUnit(o, p.weights, false, false);
-    o.align4();
-    o.bytesList(p.joints);
-    // Indices fit 16 bits for nearly everything.
-    const bool wide = !p.positions.empty() && p.positions.size() / 3 > 65535;
-    o.align4();
-    o.u32(wide ? 1 : 0);
-    o.u32(static_cast<std::uint32_t>(p.indices.size()));
-    for (const std::uint32_t i : p.indices) {
-        if (wide) {
-            o.u32(i);
-        } else {
-            o.u16(static_cast<std::uint16_t>(i));
+    o.align16();
+    const std::size_t vertices = p.positions.size() / 3;
+    std::size_t real = p.indices.size() / 3 * 3;
+    for (std::size_t i = 0; i < real; ++i) {
+        if (p.indices[i] >= vertices) {
+            real = 0;  // a primitive that points past its vertices is left out
+            break;
         }
     }
-    o.align4();
-    o.floats(p.origin);
+    const std::size_t corners = real == 0 ? 0 : (real + 11) / 12 * 12;
+    const bool uvs = p.uvs.size() == vertices * 2, normals = p.normals.size() == vertices * 3, colours = p.colors.size() == vertices * 3 || p.alphas.size() == vertices,
+               lightUvs = p.lightUvs.size() == vertices * 2, skinned = p.joints.size() == vertices * 4 && p.weights.size() == vertices * 4;
+    float lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0}, uvLo = 0, uvHi = 0;
+    for (std::size_t i = 0; i < real; ++i) {
+        const std::size_t v = p.indices[i];
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float x = p.positions[v * 3 + k];
+            lo[k] = i == 0 ? x : std::min(lo[k], x);
+            hi[k] = i == 0 ? x : std::max(hi[k], x);
+        }
+        for (std::size_t k = 0; uvs && k < 2; ++k) {
+            const float x = p.uvs[v * 2 + k];
+            uvLo = i == 0 && k == 0 ? x : std::min(uvLo, x);
+            uvHi = i == 0 && k == 0 ? x : std::max(uvHi, x);
+        }
+    }
+    o.i32(p.material);
+    o.u32(static_cast<std::uint32_t>(corners));
+    o.u32(static_cast<std::uint32_t>(real));
+    o.u32((skinned ? kSoupSkinned : 0) | (colours ? kSoupColours : 0) | (lightUvs ? kSoupLightUvs : 0) | (uvs ? kSoupUvs : 0));
+    for (int k = 0; k < 3; ++k) {
+        o.f32(lo[k]);
+    }
+    for (int k = 0; k < 3; ++k) {
+        o.f32(hi[k]);
+    }
+    o.f32(uvLo);
+    o.f32(uvHi);
+    const auto vertexOf = [&](std::size_t corner) { return static_cast<std::size_t>(p.indices[corner < real ? corner : real - 1]); };
+    const auto q16 = [](float x, float low, float high) {
+        return static_cast<std::uint16_t>(high > low ? std::lround(std::clamp((x - low) / (high - low), 0.0f, 1.0f) * 65535.0f) : 0);
+    };
+    const auto byteOf = [](float x, float scale, bool isSigned) {
+        const float c = std::clamp(x, isSigned ? -1.0f : 0.0f, 1.0f);
+        return static_cast<std::uint8_t>(isSigned ? static_cast<std::uint8_t>(static_cast<std::int8_t>(std::lround(c * scale))) : std::lround(c * scale));
+    };
+    for (std::size_t c = 0; c < corners; ++c) {  // positions
+        const std::size_t v = vertexOf(c);
+        for (std::size_t k = 0; k < 3; ++k) {
+            o.u16(q16(p.positions[v * 3 + k], lo[k], hi[k]));
+        }
+        o.u16(0);
+    }
+    for (std::size_t c = 0; c < corners; ++c) {  // texture coordinates
+        const std::size_t v = vertexOf(c);
+        o.u16(uvs ? q16(p.uvs[v * 2], uvLo, uvHi) : 0);
+        o.u16(uvs ? q16(p.uvs[v * 2 + 1], uvLo, uvHi) : 0);
+    }
+    for (std::size_t c = 0; c < corners; ++c) {  // normals
+        const std::size_t v = vertexOf(c);
+        for (std::size_t k = 0; k < 3; ++k) {
+            o.u8(normals ? byteOf(p.normals[v * 3 + k], 127.0f, true) : static_cast<std::uint8_t>(k == 2 ? 127 : 0));
+        }
+        o.u8(0);
+    }
+    if (colours) {
+        for (std::size_t c = 0; c < corners; ++c) {
+            const std::size_t v = vertexOf(c);
+            for (std::size_t k = 0; k < 3; ++k) {
+                o.u8(p.colors.size() == vertices * 3 ? byteOf(p.colors[v * 3 + k], 255.0f, false) : 255);
+            }
+            o.u8(p.alphas.size() == vertices ? byteOf(p.alphas[v], 255.0f, false) : 255);
+        }
+    }
+    if (lightUvs) {
+        for (std::size_t c = 0; c < corners; ++c) {
+            const std::size_t v = vertexOf(c);
+            o.u16(q16(p.lightUvs[v * 2], 0, 1));
+            o.u16(q16(p.lightUvs[v * 2 + 1], 0, 1));
+        }
+    }
+    if (skinned) {
+        for (std::size_t c = 0; c < corners; ++c) {
+            const std::size_t v = vertexOf(c);
+            for (std::size_t k = 0; k < 4; ++k) {
+                o.u8(p.joints[v * 4 + k]);
+            }
+        }
+        for (std::size_t c = 0; c < corners; ++c) {
+            const std::size_t v = vertexOf(c);
+            for (std::size_t k = 0; k < 4; ++k) {
+                o.u8(byteOf(p.weights[v * 4 + k], 255.0f, false));
+            }
+        }
+    }
+}
+
+// Where a soup primitive's parts lie (relative to its start) and how big it is.
+struct SoupLayout {
+    std::int32_t material = -1;
+    std::uint32_t corners = 0, real = 0, flags = 0;
+    float lo[3]{}, hi[3]{}, uvLo = 0, uvHi = 0;
+    std::size_t positions = 0, uvs = 0, normals = 0, colours = 0, lightUvs = 0, joints = 0, weights = 0, end = 0;
+};
+
+SoupLayout soupLayout(In& in) {
+    SoupLayout l;
+    in.align16();
+    const std::size_t start = in.position();
+    l.material = in.i32();
+    l.corners = in.u32();
+    l.real = in.u32();
+    l.flags = in.u32();
+    for (auto& v : l.lo) v = in.f32();
+    for (auto& v : l.hi) v = in.f32();
+    l.uvLo = in.f32();
+    l.uvHi = in.f32();
+    if (l.corners % 12 != 0 || l.real > l.corners) {
+        throw std::runtime_error("baked scene: bad primitive");
+    }
+    std::size_t at = in.position() - start;
+    const std::size_t n = l.corners;
+    l.positions = at;
+    at += n * 8;
+    l.uvs = at;
+    at += n * 4;
+    l.normals = at;
+    at += n * 4;
+    if (l.flags & kSoupColours) {
+        l.colours = at;
+        at += n * 4;
+    }
+    if (l.flags & kSoupLightUvs) {
+        l.lightUvs = at;
+        at += n * 4;
+    }
+    if (l.flags & kSoupSkinned) {
+        l.joints = at;
+        at += n * 4;
+        l.weights = at;
+        at += n * 4;
+    }
+    in.skip(at - (in.position() - start));
+    l.end = at;
+    return l;
 }
 
 scene::Primitive readPrimitive(In& in) {
+    in.align16();
+    const std::size_t start = in.position();
+    const SoupLayout l = soupLayout(in);
+    const std::uint8_t* base = in.base() + start;
+    const auto u16At = [&](std::size_t offset, std::size_t i) {
+        std::uint16_t v;
+        std::memcpy(&v, base + offset + i * 2, 2);
+        return v;
+    };
     scene::Primitive p;
-    in.align4();
-    p.material = in.i32();
-    p.group = in.str();
-    p.positions = readPositions(in);
-    p.normals = readUnit(in, true, false);
-    p.uvs = readQuantized(in);
-    p.alphas = readUnit(in, false, false);
-    p.colors = readUnit(in, false, false);
-    p.lightUvs = readUnit(in, false, true);
-    p.weights = readUnit(in, false, false);
-    in.align4();
-    p.joints = in.bytesList();
-    in.align4();
-    const bool wide = in.u32() != 0;
-    p.indices.resize(in.count(wide ? 4 : 2));
-    for (auto& i : p.indices) {
-        i = wide ? in.u32() : in.u16();
+    p.material = l.material;
+    const std::size_t n = l.real;  // the padding is left behind
+    p.positions.resize(n * 3);
+    p.normals.resize(n * 3);
+    for (std::size_t c = 0; c < n; ++c) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            p.positions[c * 3 + k] = l.lo[k] + (l.hi[k] - l.lo[k]) * (static_cast<float>(u16At(l.positions, c * 4 + k)) / 65535.0f);
+            p.normals[c * 3 + k] = static_cast<float>(static_cast<std::int8_t>(base[l.normals + c * 4 + k])) / 127.0f;
+        }
     }
-    in.align4();
-    p.origin = in.floats<3>();
+    if (l.flags & kSoupUvs) {
+        p.uvs.resize(n * 2);
+        for (std::size_t i = 0; i < n * 2; ++i) {
+            p.uvs[i] = l.uvLo + (l.uvHi - l.uvLo) * (static_cast<float>(u16At(l.uvs, i)) / 65535.0f);
+        }
+    }
+    if (l.flags & kSoupColours) {
+        p.colors.resize(n * 3);
+        p.alphas.resize(n);
+        for (std::size_t c = 0; c < n; ++c) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                p.colors[c * 3 + k] = static_cast<float>(base[l.colours + c * 4 + k]) / 255.0f;
+            }
+            p.alphas[c] = static_cast<float>(base[l.colours + c * 4 + 3]) / 255.0f;
+        }
+    }
+    if (l.flags & kSoupLightUvs) {
+        p.lightUvs.resize(n * 2);
+        for (std::size_t i = 0; i < n * 2; ++i) {
+            p.lightUvs[i] = static_cast<float>(u16At(l.lightUvs, i)) / 65535.0f;
+        }
+    }
+    if (l.flags & kSoupSkinned) {
+        p.joints.assign(base + l.joints, base + l.joints + n * 4);
+        p.weights.resize(n * 4);
+        for (std::size_t i = 0; i < n * 4; ++i) {
+            p.weights[i] = static_cast<float>(base[l.weights + i]) / 255.0f;
+        }
+    }
+    p.indices.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        p.indices[i] = static_cast<std::uint32_t>(i);
+    }
     return p;
 }
 
@@ -591,7 +749,7 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
             st.trianglesBefore += original.indices.size() / 3;
             st.triangles += p.indices.size() / 3;
             st.verticesBefore += original.positions.size() / 3;
-            st.vertices += p.positions.size() / 3;
+            st.vertices += p.indices.size();  // corners: the soup repeats a vertex for each triangle that uses it
         }
         o.u32(static_cast<std::uint32_t>(mesh.skin.size()));
         for (const auto& j : mesh.skin) {
@@ -622,9 +780,9 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     // The images start on a 16-byte boundary of the file: the head is padded to end on one.
     o.bytes.resize(o.bytes.size() + (16 - (kBakedPreambleSize + o.bytes.size()) % 16) % 16, 0);
     std::vector<std::uint8_t> file;
-    const std::uint32_t preamble[3] = {kMagic, kVersion, static_cast<std::uint32_t>(o.bytes.size())};
+    const std::uint32_t preamble[4] = {kMagic, kVersion, static_cast<std::uint32_t>(o.bytes.size()), 0};
     file.resize(kBakedPreambleSize);
-    std::memcpy(file.data(), preamble, 12);
+    std::memcpy(file.data(), preamble, 16);
     file.insert(file.end(), o.bytes.begin(), o.bytes.end());
     for (const auto& blob : blobs) {
         file.insert(file.end(), blob.begin(), blob.end());
@@ -638,54 +796,19 @@ namespace {
 // Reads the head from `in`, which stands just after the preamble; the images' offsets are made absolute with `imageArea`.
 // Reads the head's one primitive without expanding it: what a draw needs to know, and where its bytes end.
 void scanPrimitive(In& in, std::size_t base, BakedPrimitive& out) {
-    in.align4();
+    in.align16();
     const std::size_t start = in.position();
-    out.material = in.i32();
-    in.skip(in.count(1));  // the group's name
-    in.align4();
-    const std::size_t floatsOfPositions = in.count(2);
-    if (floatsOfPositions > 0) {
-        float range[6];
-        for (auto& r : range) {
-            r = in.f32();
-        }
-        for (std::size_t k = 0; k < 3; ++k) {
-            out.low[k] = range[k * 2];
-            out.high[k] = range[k * 2 + 1];
-        }
-        in.skip(floatsOfPositions * 2);
+    const SoupLayout l = soupLayout(in);
+    out.material = l.material;
+    out.vertices = out.indices = l.corners;
+    out.lightMapped = (l.flags & kSoupLightUvs) != 0 && l.corners > 0;
+    out.skinned = (l.flags & kSoupSkinned) != 0 && l.corners > 0;
+    for (std::size_t k = 0; k < 3; ++k) {
+        out.low[k] = l.lo[k];
+        out.high[k] = l.hi[k];
     }
-    out.vertices = static_cast<std::uint32_t>(floatsOfPositions / 3);
-    const std::size_t n = out.vertices;
-    in.align4();
-    in.skip(in.count(1));  // normals
-    in.align4();
-    if (const std::size_t uv = in.count(2); uv > 0) {
-        in.skip(8 + uv * 2);
-    }
-    in.align4();
-    in.skip(in.count(1));  // alphas
-    in.align4();
-    in.skip(in.count(1));  // colours
-    in.align4();
-    const std::size_t lightUvs = in.count(2);
-    in.skip(lightUvs * 2);
-    out.lightMapped = n > 0 && lightUvs == n * 2;
-    in.align4();
-    const std::size_t weights = in.count(1);
-    in.skip(weights);
-    in.align4();
-    const std::size_t joints = in.count(1);
-    in.skip(joints);
-    out.skinned = n > 0 && weights == n * 4 && joints == n * 4;
-    in.align4();
-    const bool wide = in.u32() != 0;
-    out.indices = static_cast<std::uint32_t>(in.count(wide ? 4 : 2));
-    in.skip(std::size_t{out.indices} * (wide ? 4 : 2));
-    in.align4();
-    in.skip(12);  // the origin
     out.offset = base + start;
-    out.size = in.position() - start;
+    out.size = l.end;
 }
 
 scene::Scene readHead(In& in, std::uint64_t imageArea, BakedMeshes* compact = nullptr, std::size_t base = 0) {
@@ -721,7 +844,7 @@ scene::Scene readHead(In& in, std::uint64_t imageArea, BakedMeshes* compact = nu
         scene::Mesh scratch;
         scene::Mesh& mesh = compact ? scratch : s.meshes[m];
         mesh.name = in.str();
-        const std::size_t primitives = in.count(20);
+        const std::size_t primitives = in.count(48);
         if (compact) {
             compact->meshes[m].resize(primitives);
             for (auto& p : compact->meshes[m]) scanPrimitive(in, base, p);
@@ -769,8 +892,8 @@ scene::Scene readBakedHead(std::span<const std::uint8_t> head) {
     return readHead(in, kBakedPreambleSize + size);
 }
 
-scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& meshes) {
-    const std::uint32_t size = checkedHeadSize(head);
+scene::Scene readBakedHeadCompact(AlignedBytes head, BakedMeshes& meshes) {
+    const std::uint32_t size = checkedHeadSize(std::span<const std::uint8_t>(head));
     if (head.size() < kBakedPreambleSize + size) {
         throw std::runtime_error("baked scene: head truncated");
     }
@@ -781,52 +904,19 @@ scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& m
 
 void viewPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, PrimitiveView& v) {
     In in(std::span<const std::uint8_t>(meshes.bytes).subspan(primitive.offset, primitive.size));
+    const SoupLayout l = soupLayout(in);
+    const std::uint8_t* base = meshes.bytes.data() + primitive.offset;
     v = PrimitiveView{};
-    in.align4();
-    in.skip(4);                 // the material
-    in.skip(in.count(1));       // the group's name
-    in.align4();
-    const std::size_t floatsOfPositions = in.count(2);
-    v.vertices = static_cast<std::uint32_t>(floatsOfPositions / 3);
-    if (floatsOfPositions > 0) {
-        for (int k = 0; k < 3; ++k) {
-            v.lo[k] = in.f32();
-            v.hi[k] = in.f32();
-        }
-        v.positions = reinterpret_cast<const std::uint16_t*>(in.here());
-        in.skip(floatsOfPositions * 2);
-    }
-    in.align4();
-    const std::size_t normals = in.count(1);
-    v.normals = normals == floatsOfPositions && normals > 0 ? reinterpret_cast<const std::int8_t*>(in.here()) : nullptr;
-    in.skip(normals);
-    in.align4();
-    if (const std::size_t uv = in.count(2); uv > 0) {
-        v.uvLo = in.f32();
-        v.uvHi = in.f32();
-        v.uvs = uv == std::size_t{v.vertices} * 2 ? reinterpret_cast<const std::uint16_t*>(in.here()) : nullptr;
-        in.skip(uv * 2);
-    }
-    in.align4();
-    const std::size_t alphas = in.count(1);
-    v.alphas = alphas == v.vertices && alphas > 0 ? in.here() : nullptr;
-    in.skip(alphas);
-    in.align4();
-    const std::size_t colors = in.count(1);
-    v.colors = colors == floatsOfPositions && colors > 0 ? in.here() : nullptr;
-    in.skip(colors);
-    in.align4();
-    const std::size_t lightUvs = in.count(2);
-    v.lightUvs = lightUvs == std::size_t{v.vertices} * 2 && lightUvs > 0 ? reinterpret_cast<const std::uint16_t*>(in.here()) : nullptr;
-    in.skip(lightUvs * 2);
-    in.align4();
-    in.skip(in.count(1));  // weights
-    in.align4();
-    in.skip(in.count(1));  // joints
-    in.align4();
-    v.wideIndices = in.u32() != 0;
-    v.indices = static_cast<std::uint32_t>(in.count(v.wideIndices ? 4 : 2));
-    v.indexData = in.here();
+    v.corners = l.corners;
+    std::copy_n(l.lo, 3, v.lo);
+    std::copy_n(l.hi, 3, v.hi);
+    v.uvLo = l.uvLo;
+    v.uvHi = l.uvHi;
+    v.positions = reinterpret_cast<const std::uint16_t*>(base + l.positions);
+    v.uvs = (l.flags & kSoupUvs) ? reinterpret_cast<const std::uint16_t*>(base + l.uvs) : nullptr;
+    v.normals = reinterpret_cast<const std::int8_t*>(base + l.normals);
+    v.colors = (l.flags & kSoupColours) ? base + l.colours : nullptr;
+    v.lightUvs = (l.flags & kSoupLightUvs) ? reinterpret_cast<const std::uint16_t*>(base + l.lightUvs) : nullptr;
 }
 
 void expandPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, ExpandedPrimitive& out) {

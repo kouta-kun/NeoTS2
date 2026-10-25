@@ -12,6 +12,7 @@
 #include "scene/scene.hpp"
 
 #include <cstdint>
+#include <new>
 #include <span>
 #include <vector>
 
@@ -33,12 +34,26 @@ struct BakeStats {
 // each when it is needed. `bakedHeadSize` says from the first 12 bytes how many bytes at the start of the file make up the head;
 // `readBakedHead` reads those. The scene's images have their size and place in the file (Image::consoleOffset, consoleSize) and
 // no `console`.
-constexpr std::size_t kBakedPreambleSize = 12;
+constexpr std::size_t kBakedPreambleSize = 16;
 [[nodiscard]] std::size_t bakedHeadSize(std::span<const std::uint8_t> preamble);
 [[nodiscard]] scene::Scene readBakedHead(std::span<const std::uint8_t> head);
 
 // A console that cannot hold a scene's meshes as floats keeps them as they are in the head, one primitive at a time: what a draw
 // needs to know of each without reading its vertices, and where its bytes are.
+// Bytes held on a 16-byte boundary, which the console's DMA needs for what it reads straight out of the head.
+template <class T>
+struct Aligned16 {
+    using value_type = T;
+    Aligned16() = default;
+    template <class U>
+    Aligned16(const Aligned16<U>&) {}
+    T* allocate(std::size_t n) { return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t{16})); }
+    void deallocate(T* p, std::size_t) { ::operator delete(p, std::align_val_t{16}); }
+    template <class U>
+    bool operator==(const Aligned16<U>&) const { return true; }
+};
+using AlignedBytes = std::vector<std::uint8_t, Aligned16<std::uint8_t>>;
+
 struct BakedPrimitive {
     int material = -1;
     std::uint32_t vertices = 0, indices = 0;
@@ -48,29 +63,27 @@ struct BakedPrimitive {
 };
 
 struct BakedMeshes {
-    std::vector<std::uint8_t> bytes;  // the head, kept (what the primitives' offsets point into)
+    AlignedBytes bytes;  // the head, kept (what the primitives' offsets point into)
     std::vector<std::vector<BakedPrimitive>> meshes;  // by the scene's mesh index (the scene returned has none of its own)
 };
 
 // Reads a head as readBakedHead does, but leaves the meshes in `meshes` as bytes (it takes the head over). The scene it returns has
 // no meshes, and its images are as readBakedHead's.
-[[nodiscard]] scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& meshes);
+[[nodiscard]] scene::Scene readBakedHeadCompact(AlignedBytes head, BakedMeshes& meshes);
 
-// A primitive's arrays where they lie in the head, for reading them without expanding the primitive. Every array is aligned for the type
-// it is read as. Positions are x, y, z per vertex in 16 bits over each axis's range (value = lo + u / 65535 * (hi - lo)), texture coordinates
-// u, v in 16 bits over one range, normals three signed bytes (/127), light-map coordinates 16 bits (/65535), colours and alphas bytes (/255).
+// A primitive's corners as they lie in the head: triangle soup (three corners a triangle, no indices) padded to a multiple of 12 corners with
+// degenerate triangles, each array 16-byte aligned so that the VIF can unpack it straight from memory. Positions are x, y, z, 0 in 16 bits over each axis's
+// range (value = lo + u / 65535 * (hi - lo)); texture coordinates u, v in 16 bits over one range; normals x, y, z, 0 as signed bytes (/127); colours r, g, b, a bytes
+// (/255) or null; light-map coordinates u, v in 16 bits (/65535) or null.
 struct PrimitiveView {
-    std::uint32_t vertices = 0, indices = 0;
-    const std::uint16_t* positions = nullptr;
+    std::uint32_t corners = 0;
     float lo[3]{}, hi[3]{};
-    const std::uint16_t* uvs = nullptr;  // null when there are none
     float uvLo = 0, uvHi = 0;
+    const std::uint16_t* positions = nullptr;
+    const std::uint16_t* uvs = nullptr;
     const std::int8_t* normals = nullptr;
-    const std::uint8_t* colors = nullptr;  // three bytes a vertex, or null
-    const std::uint8_t* alphas = nullptr;
+    const std::uint8_t* colors = nullptr;
     const std::uint16_t* lightUvs = nullptr;
-    const void* indexData = nullptr;  // std::uint16_t, or std::uint32_t when `wideIndices`
-    bool wideIndices = false;
 };
 void viewPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, PrimitiveView& out);
 
