@@ -380,3 +380,19 @@ code), character files, UI.
 14,709 resources, 461 MiB. Texture pixel data (`0xED534136`, 1,736 resources) 316 MiB, meshes (`GMDC`, 1,097) 97 MiB,
 the rest 48 MiB. Against the per-neighborhood banks (207-249 MiB each) that is the real size of what the base game's saved lots
 use; it grows only with lots that bring other objects. Unconverted.
+
+**Texture conversion** (`ts2bank --textures [--max-side N] [--palette-error E] [--dither]`, format in
+`src/content/console_texture.hpp`): each TXTR is decoded, resampled to a power of two no larger than `--max-side` (default 256),
+and stored as 4-bit if a 16-colour palette changes it by at most E RMS levels (default 8), else 8-bit if 256 colours change it by
+at most E/2, else 32-bit. Bump maps and cube maps are dropped. The large-level (LIFO) resources fold into the texture. Only the
+largest level is stored so far (mips would add about a third). Results for the all-lots base bank (1,868 textures):
+
+| Setting | Textures | Bank (all resources) |
+|---|---|---|
+| unconverted | 349 MiB | 461 MiB |
+| `--max-side 256`, error 8 | 62 MiB (4-bit 1,470; 8-bit 216; 32-bit 80; 102 dropped) | 174 MiB |
+
+RMS error over the textures: mean 2.8, max 8.0 levels. Meshes are now the largest part of the bank (97 MiB). Not checked by eye
+yet: which 80 textures stay 32-bit, and how the 256 cap looks on Sims and objects. One lot's textures (N001 Lot 11): 54 MiB -> 9.6 MiB
+at 256, 29 MiB at 512 with error 5. Runtime composites (Sims' skins, light maps) are not covered; see the discussion of runtime
+pixel edits.
