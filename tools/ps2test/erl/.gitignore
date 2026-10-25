@@ -1,0 +1,4 @@
+*.o
+*.erl
+*.elf
+symbols.cpp

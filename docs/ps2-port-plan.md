@@ -327,3 +327,27 @@ M3 a lot view with fixed lighting; M4 a simulation tick; M5 playable loop with U
 - Headless recipe: Xvfb + `vulkan-swrast`, with `Renderer = 11` (Null) and `Adapter = llvmpipe (...)`
   in PCSX2.ini, then `pcsx2-qt -batch -nogui -elf <file>`; EE stdout shows in the log.
   PCSX2 opens a Vulkan surface even for the Null renderer, and RADV cannot present on Xvfb.
+
+### ERL overlay test (tools/ps2test/erl)
+
+Setup: this ps2sdk ships no `erl-loader.elf` or `libc.erl`, so the host ELF links libstdc++ and registers the
+module's undefined symbols (generated from `nm -u`) with `erl_add_global_symbol`, then `load_erl_from_mem`.
+Run under PCSX2.
+
+| Check | Result |
+|---|---|
+| Load, symbol lookup, plain call | pass |
+| `std::vector` (new/delete shared with host) | pass |
+| `std::format` with ints, module built `-O0` | pass |
+| `std::format`, module built `-O1/-O2/-O3/-Os` | **fails** (`format_error`; wrong data) |
+| `throw`/`catch` inside the module | **fails** (`terminate`: unwinder cannot see the module's frames) |
+
+Causes seen in the log: liberl refuses 14 unaligned `R_MIPS_32` relocations in `.eh_frame` (the LSDA pointers
+inside FDEs), so registering the module's `.eh_frame` with `__register_frame_info` does not help; `-fPIC` is not
+available on this target. The optimised failures coincide with 108 `R_MIPS_HI16` against 112 `R_MIPS_LO16`
+relocations (several LO16 sharing one HI16), which liberl probably pairs wrongly. Stripping with
+`--strip-unneeded` also breaks string-literal relocations (`.LC*` labels), so only `--strip-debug` is safe.
+
+Conclusion: ERL is not a safe vehicle for the editor overlay as it stands. Keep ELF-per-mode (a separate
+executable per neighbourhood/lot/build mode, switched by loading it) as the plan, and treat ERL as
+optional (fixing liberl's relocation handling would be the work to make it viable).
