@@ -283,8 +283,8 @@ private:
     // in. Added after the light map's own image.
     int addIncidence(const Image& lightMap) {
         Image incidence;
-        incidence.width = std::max(1u, lightMap.width / 2);
-        incidence.height = std::max(1u, lightMap.height / 2);
+        incidence.width = std::max<std::uint32_t>(1, lightMap.width / 2);
+        incidence.height = std::max<std::uint32_t>(1, lightMap.height / 2);
         incidence.rgba.reserve(static_cast<std::size_t>(incidence.width) * incidence.height * 4);
         for (std::size_t i = 0; i < static_cast<std::size_t>(incidence.width) * incidence.height; ++i) {
             incidence.rgba.insert(incidence.rgba.end(), {128, 128, 255, 255});

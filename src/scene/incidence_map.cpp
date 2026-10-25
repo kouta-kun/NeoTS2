@@ -42,11 +42,11 @@ Table makeTable(float k, float heightClamp) {
 }
 
 std::int32_t saturate16(std::int32_t v) {
-    return std::clamp(v, -32768, 32767);
+    return std::clamp<std::int32_t>(v, -32768, 32767);
 }
 
 std::uint8_t saturate8(std::int32_t v) {
-    return static_cast<std::uint8_t>(std::clamp(v, 0, 255));
+    return static_cast<std::uint8_t>(std::clamp<std::int32_t>(v, 0, 255));
 }
 
 } // namespace

@@ -738,7 +738,7 @@ std::size_t textureBytes(std::uint32_t width, std::uint32_t height, std::uint32_
     const std::size_t pixels = static_cast<std::size_t>(width) * height;
     switch (format) {
     case 4: case 5: case 8: {
-        const std::size_t blocks = static_cast<std::size_t>(std::max(1u, (width + 3) / 4)) * std::max(1u, (height + 3) / 4);
+        const std::size_t blocks = static_cast<std::size_t>(std::max<std::uint32_t>(1, (width + 3) / 4)) * std::max<std::uint32_t>(1, (height + 3) / 4);
         return blocks * (format == 4 ? 8 : 16);
     }
     case 1: return pixels * 4;
@@ -763,7 +763,7 @@ std::vector<std::uint8_t> decodeRgba(std::span<const std::uint8_t> data, std::ui
     auto pixel = [&](std::uint32_t x, std::uint32_t y) { return out.data() + (static_cast<std::size_t>(y) * width + x) * 4; };
     if (format == 4 || format == 5 || format == 8) {
         const std::size_t blockBytes = format == 4 ? 8 : 16;
-        const std::uint32_t bw = std::max(1u, (width + 3) / 4), bh = std::max(1u, (height + 3) / 4);
+        const std::uint32_t bw = std::max<std::uint32_t>(1, (width + 3) / 4), bh = std::max<std::uint32_t>(1, (height + 3) / 4);
         for (std::uint32_t by = 0; by < bh; ++by) {
             for (std::uint32_t bx = 0; bx < bw; ++bx) {
                 const std::uint8_t* block = data.data() + (static_cast<std::size_t>(by) * bw + bx) * blockBytes;

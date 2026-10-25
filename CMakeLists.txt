@@ -344,6 +344,13 @@ target_link_libraries(ts2scene PUBLIC ts2content PRIVATE project_warnings)
 add_library(ts2renderplan src/render/cpu_light.cpp src/render/fixed_layout.cpp src/render/frame_plan.cpp src/render/gl_subset.cpp src/render/mesh_pack.cpp src/render/shared_state.cpp src/render/terrain_mesh.cpp src/render/texture_fit.cpp)
 target_link_libraries(ts2renderplan PUBLIC ts2scene PRIVATE project_warnings)
 
+# Only the libraries above, with no window, graphics, tools or tests: for cross-compiling the engine's core for a
+# console (see cmake/ps2.cmake and docs/ps2-port-plan.md).
+option(NEOTS2_CORE_ONLY "Build only the engine's portable libraries" OFF)
+if(NEOTS2_CORE_ONLY)
+    return()
+endif()
+
 if(NEOTS2_FUZZ)
     foreach(target qfs_fuzz dbpf_fuzz cobject_fuzz bhav_fuzz str_fuzz bcon_fuzz fcns_fuzz glob_fuzz objd_fuzz
                    objt_fuzz objm_fuzz xobj_fuzz wallgraph_fuzz array3d_fuzz srel_fuzz sdsc_fuzz fami_fuzz famt_fuzz slot_fuzz swaf_fuzz propset_fuzz ttab_fuzz luascript_fuzz ngbh_fuzz datatables_fuzz scenegraph_fuzz stringmap_fuzz walllayer_fuzz namemap_fuzz fencepostlayer_fuzz roofs_fuzz terrain_fuzz reia_fuzz

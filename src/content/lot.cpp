@@ -294,7 +294,7 @@ void dropLevelsBelowGround(wallgraph::WallGraph& graph) {
         kept.insert(p.id);
     }
     std::erase_if(graph.walls, [&](const wallgraph::Wall& w) { return !kept.contains(w.from) || !kept.contains(w.to); });
-    const std::int64_t levels = std::int64_t{graph.levels} + std::min(0, graph.firstLevel);
+    const std::int64_t levels = std::int64_t{graph.levels} + std::min<std::int32_t>(0, graph.firstLevel);
     graph.levels = static_cast<std::int32_t>(std::max<std::int64_t>(levels, 0));
     graph.firstLevel = 0;
 }
@@ -312,7 +312,7 @@ Lot fromGroundStorey(const Lot& lot) {
         if (grid.levels != levels) {
             continue;
         }
-        const std::size_t below = std::min(grid.elements.size(), static_cast<std::size_t>(ground) * grid.width * grid.height * grid.elementSize);
+        const std::size_t below = std::min<std::size_t>(grid.elements.size(), static_cast<std::size_t>(ground) * grid.width * grid.height * grid.elementSize);
         grid.elements.erase(grid.elements.begin(), grid.elements.begin() + static_cast<std::ptrdiff_t>(below));
         grid.levels -= static_cast<std::uint32_t>(ground);
     }
@@ -320,7 +320,7 @@ Lot fromGroundStorey(const Lot& lot) {
         if (grid.levels != levels) {
             continue;
         }
-        const std::size_t below = std::min(grid.cells.size(), static_cast<std::size_t>(ground) * grid.width * grid.height);
+        const std::size_t below = std::min<std::size_t>(grid.cells.size(), static_cast<std::size_t>(ground) * grid.width * grid.height);
         grid.cells.erase(grid.cells.begin(), grid.cells.begin() + static_cast<std::ptrdiff_t>(below));
         grid.levels -= static_cast<std::uint32_t>(ground);
     }

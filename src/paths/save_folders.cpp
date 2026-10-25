@@ -209,6 +209,9 @@ bool saveFolderBusy(const fs::path& folder) {
     }
     CloseHandle(handle);
     return false;
+#elif defined(__PS2__)
+    // One program runs on the console, so no other can be using a save folder.
+    return false;
 #else
     const int handle = ::open(file.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (handle < 0) {
@@ -265,6 +268,9 @@ SaveFolderLock::SaveFolderLock(const fs::path& folder) : folder_(saveFolderPath(
     }
     handle_ = handle;
     held_ = true;
+#elif defined(__PS2__)
+    // One program runs on the console, so nothing else could hold the save folder.
+    held_ = true;
 #else
     file_ = ::open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
     if (file_ < 0) {
@@ -291,6 +297,8 @@ SaveFolderLock::~SaveFolderLock() {
     if (handle_) {
         CloseHandle(static_cast<HANDLE>(handle_));
     }
+#elif defined(__PS2__)
+    // Nothing was opened.
 #else
     if (file_ >= 0) {
         ::close(file_);

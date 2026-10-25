@@ -49,7 +49,7 @@ std::int32_t highWord(std::int32_t a, std::int32_t b) {
 }
 
 std::uint8_t saturate8(std::int32_t v) {
-    return static_cast<std::uint8_t>(std::clamp(v, 0, 255));
+    return static_cast<std::uint8_t>(std::clamp<std::int32_t>(v, 0, 255));
 }
 
 } // namespace

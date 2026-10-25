@@ -259,7 +259,7 @@ private:
 
     // `smaller` steps below the largest level in the file.
     static std::uint32_t size(std::uint32_t s, std::size_t smaller) {
-        return smaller >= 32 ? 1u : std::max(1u, s >> smaller);
+        return smaller >= 32 ? 1u : std::max<std::uint32_t>(1, s >> smaller);
     }
 
     // A level's data by steps below the largest in the file. Empty when it isn't there.
