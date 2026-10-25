@@ -4,8 +4,11 @@
 // out/code.package holds every resource the simulation read while the lot loaded and during `ticks` ticks (decompressed, under the keys the index gave them,
 // the neighborhood's characters included), out/sim.cfg the installed-packs mask, and the lot's and its neighborhood's packages are copied to where the
 // neighborhood folders put them. The console runs LotSimulation(packages, mask, lot) on that tree.
+#include "content/animation_lists.hpp"
 #include "content/install.hpp"
 #include "content/neighborhood.hpp"
+#include "formats/resource_types.hpp"
+#include "content/lot.hpp"
 #include "content/wants.hpp"
 #include "content/resource_index.hpp"
 #include "../../app/route_sources.hpp"
@@ -15,6 +18,7 @@
 #include "scene/animation_library.hpp"
 #include "scene/assets.hpp"
 #include "scene/outfit_properties.hpp"
+#include "sim/behavior_closure.hpp"
 #include "sim/index_code_source.hpp"
 #include "sim/lot_simulation.hpp"
 #include "sim/support_table.hpp"
@@ -26,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <tuple>
 
 int main(int argc, char** argv) {
@@ -152,6 +157,34 @@ int main(int argc, char** argv) {
                 support->outfitProperties[{neighbor, category, property}] = value;
                 return value;
             });
+            {
+                // Every animation of the global age lists, asked once: a Sim that takes another path on the console plays animations the run here never did, and an
+                // animation the table does not know is taken for one that does not exist.
+                ts2::content::ResourceIndex listIndex;
+                for (const auto& path : ts2::content::objectLoadOrder(ts2::content::findProducts(install))) {
+                    listIndex.addPackage(path);
+                }
+                ts2::sim::IndexCodeSource listStrings(listIndex);
+                std::size_t names = 0;
+                for (const std::uint16_t list : {0x81, 0x82, 0x89, 0x91}) {
+                    for (std::size_t entry = 0; entry < 400; ++entry) {
+                        const auto text = listStrings.string(ts2::sim::kGlobalGroup, list, entry);
+                        if (!text) {
+                            continue;
+                        }
+                        const std::string name = ts2::content::animationName(*text);
+                        if (name.empty()) {
+                            continue;
+                        }
+                        world.animationLengths()(name);
+                        world.animationCarries()(name);
+                        world.locoClips()(name);
+                        world.animationEvents()(name);
+                        ++names;
+                    }
+                }
+                std::printf("simbank: %zu animations of the global age lists asked once\n", names);
+            }
             for (std::size_t i = 0; i < ticks; ++i) {
                 simulation.tick();
             }
@@ -163,6 +196,48 @@ int main(int argc, char** argv) {
                 return false;
             });
             std::printf("simbank: fingerprint after %zu ticks: %08x, %u Sims walking\n", ticks, checksum, walkers);
+        }
+        if (std::getenv("SIMBANK_NO_CLOSURE") == nullptr) {
+            // Everything the lot's objects could run, not only what these ticks did: a Sim that takes another path (the console's floats differ) needs behaviours
+            // this run never reached. The reads and name lookups of the walk are recorded like the run's.
+            ts2::content::ResourceIndex index;
+            for (const auto& path : ts2::content::objectLoadOrder(ts2::content::findProducts(install))) {
+                index.addPackage(path);
+            }
+            ts2::content::addCharacters(index, ts2::content::neighborhoodOfLot(lot));
+            ts2::sim::IndexCodeSource code(index);
+            const auto lotContent = ts2::content::loadLot(lot);
+            std::set<std::uint32_t> guids;
+            for (const auto& object : lotContent.objects) {
+                if (object.type) {
+                    guids.insert(object.type->guid);
+                }
+            }
+            for (const std::uint32_t guid : code.objectTypeGuids()) {
+                // (the objects Sims' interactions create at run time)
+                if (const auto* t = code.objectType(guid); t != nullptr && t->definition.name.rfind("Social", 0) == 0) {
+                    guids.insert(guid);
+                }
+            }
+            ts2::sim::BehaviorClosure closure{code};
+            closure.addTypes(guids);
+            closure.run();
+            std::set<std::uint32_t> groups{ts2::sim::kGlobalGroup};
+            for (const auto& [g, i] : closure.trees) {
+                groups.insert(g);
+            }
+            for (const auto& r : index.resources()) {
+                if (r.entry.key.type == 0x42434F4Eu /* BCON */ && groups.contains(r.entry.key.group)) {
+                    index.read(r);
+                }
+            }
+            // The global string tables (the animation lists of every age among them): a Sim that takes another path reads other entries of them.
+            for (const auto& r : index.resources()) {
+                if (r.entry.key.type == ts2::types::kStringTable && r.entry.key.group == ts2::sim::kGlobalGroup) {
+                    index.read(r);
+                }
+            }
+            std::printf("simbank: closure %zu trees in %zu groups (%zu object types, %zu Run Tree by Name sites)\n", closure.trees.size(), groups.size(), guids.size(), closure.namedSites);
         }
         ts2::content::ResourceIndex::sharedObserver = nullptr;
         ts2::sim::IndexCodeSource::nameObserver = nullptr;
@@ -236,13 +311,55 @@ int main(int argc, char** argv) {
         }
         fs::copy_file(lot, hoodOut / "Lots" / lot.filename(), fs::copy_options::overwrite_existing);
         const fs::path hoodPackage = ts2::content::neighborhoodPackage(hood);
+        std::size_t droppedWants = 0, keptWants = 0;
         if (fs::exists(hoodPackage)) {
-            fs::copy_file(hoodPackage, hoodOut / hoodPackage.filename(), fs::copy_options::overwrite_existing);
+            // The neighborhood without the wants and fears of the neighbors who are not on the lot (nearly all of them; they are the largest part of what it holds in memory):
+            // a neighbor without a saved record gets an empty one, as the game gives a new Sim.
+            const ts2::content::Neighborhood record = ts2::content::loadNeighborhood(hoodPackage, false);
+            const auto lotContent = ts2::content::loadLot(lot);
+            std::set<std::uint32_t> present;
+            for (const auto& object : lotContent.objects) {
+                if (object.type) {
+                    present.insert(object.type->guid);
+                }
+            }
+            std::set<std::uint32_t> keep;
+            for (const auto& [id, neighbor] : record.neighbors) {
+                if (present.contains(neighbor.guid)) {
+                    keep.insert(static_cast<std::uint32_t>(id));
+                }
+            }
+            ts2::dbpf::Package source(hoodPackage);
+            std::ofstream file(hoodOut / hoodPackage.filename(), std::ios::binary | std::ios::trunc);
+            ts2::dbpf::PackageWriter writer(file);
+            for (const auto& e : source.entries()) {
+                if (e.key.type == ts2::types::kDirectory) {
+                    continue;  // the writer makes its own
+                }
+                if (e.key.type == ts2::types::kWantsAndFears) {
+                    if (!keep.contains(e.key.instance)) {
+                        ++droppedWants;
+                        continue;
+                    }
+                    ++keptWants;
+                }
+                const auto data = source.read(e);
+                if (data.size() >= 64) {
+                    const auto packed = ts2::qfs::compress(data);
+                    if (packed.size() < data.size() && ts2::qfs::decompress(packed) == data) {
+                        writer.add(e.key, packed, true, static_cast<std::uint32_t>(data.size()));
+                        continue;
+                    }
+                }
+                writer.add(e.key, data, false, static_cast<std::uint32_t>(data.size()));
+            }
+            writer.finish(0);
+            std::printf("neighborhood: wants and fears kept for %zu neighbors, dropped for %zu\n", keptWants, droppedWants);
         }
         std::ofstream(out / "sim.cfg") << "packs=" << ts2::content::installedPacksMask(ts2::content::findProducts(install)) << "\nlot=Neighborhoods/" << hood.filename().string() << "/Lots/"
                                        << lot.filename().string() << "\n" << extra;
         std::printf("tree written to %s (lot %.2f MiB, neighborhood %.2f MiB)\n", out.c_str(), static_cast<double>(fs::file_size(lot)) / 1048576.0,
-                    fs::exists(hoodPackage) ? static_cast<double>(fs::file_size(hoodPackage)) / 1048576.0 : 0.0);
+                    fs::exists(hoodOut / hoodPackage.filename()) ? static_cast<double>(fs::file_size(hoodOut / hoodPackage.filename())) / 1048576.0 : 0.0);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "failed: %s\n", e.what());
         return 1;

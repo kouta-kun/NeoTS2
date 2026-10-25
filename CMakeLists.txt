@@ -225,6 +225,7 @@ add_library(ts2content
 target_link_libraries(ts2content PUBLIC ts2formats ts2diag ts2paths PRIVATE project_warnings)
 
 add_library(ts2sim
+    src/sim/behavior_closure.cpp
     src/sim/index_code_source.cpp
     src/sim/support_table.cpp
     src/sim/lot_world.cpp

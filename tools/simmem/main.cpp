@@ -6,6 +6,8 @@
 // On the console only the first lines of stdout reach PCSX2's log reliably, so the results are also kept in the globals below, which
 // tools/ps2test/pine_sym.sh reads from outside the running emulator.
 #include "content/wants.hpp"
+#include "content/resource_index.hpp"
+#include "sim/index_code_source.hpp"
 #include "sim/lot_simulation.hpp"
 #include "sim/support_table.hpp"
 
@@ -28,7 +30,8 @@
 extern "C" {
 volatile unsigned g_stage = 0;  // 100 once the lot is loaded, 200 + tick while ticking, 1000 when done, 900 after an exception
 char g_error[1024] = {0};        // the exception's message
-volatile unsigned g_oom = 0, g_oomSize = 0, g_terminate = 0, g_heapTick = 0, g_arenaTick = 0, g_stops = 0, g_supportBytes = 0, g_checksum = 0, g_walkers = 0, g_supportMs = 0;
+volatile unsigned g_fingerprints[96] = {0};
+volatile unsigned g_oomArena = 0, g_oomUsed = 0, g_oomFree = 0, g_oomLargest = 0, g_oom = 0, g_oomSize = 0, g_terminate = 0, g_heapTick = 0, g_arenaTick = 0, g_stops = 0, g_supportBytes = 0, g_checksum = 0, g_walkers = 0, g_supportMs = 0;
 volatile unsigned g_loadMs = 0, g_ticksMs = 0, g_ticksDone = 0, g_tickMsMax = 0, g_heapLoaded = 0, g_heapAfter = 0;
 }
 
@@ -73,6 +76,11 @@ int main(int argc, char** argv) {
     // A failed allocation or an exception nobody caught would otherwise leave the console spinning with no trace: keep the cause where PINE reads it.
     std::set_new_handler([] {
         g_oom = 1;
+        const auto mi = mallinfo();
+        g_oomArena = static_cast<unsigned>(mi.arena);
+        g_oomUsed = static_cast<unsigned>(mi.uordblks);
+        g_oomFree = static_cast<unsigned>(mi.fordblks);
+        g_oomLargest = static_cast<unsigned>(mi.keepcost);
         parkOnConsole();
         std::abort();
     });
@@ -146,6 +154,19 @@ int main(int argc, char** argv) {
             g_heapLoaded = heapInUse();
             g_stage = 70;
             parkOnConsole();
+            return 0;
+        }
+        if (argc > 3 && std::string(argv[3]) == "str") {
+            // Entries of a global string table from the bank: simmem <bank> 1 str <instance> <first> <count>
+            ts2::content::ResourceIndex index;
+            index.addPackage(bank / "code.package", std::nullopt, true);
+            ts2::sim::IndexCodeSource code(index);
+            const auto instance = static_cast<std::uint16_t>(std::strtoul(argv[4], nullptr, 0));
+            const std::size_t first = std::strtoul(argv[5], nullptr, 0), count = std::strtoul(argv[6], nullptr, 0);
+            for (std::size_t i = first; i < first + count; ++i) {
+                const auto text = code.string(ts2::sim::kGlobalGroup, instance, i);
+                std::printf("%zu: %s\n", i, text ? text->c_str() : "(none)");
+            }
             return 0;
         }
         if (argc > 3 && std::string(argv[3]) == "reads") {
@@ -278,6 +299,14 @@ int main(int argc, char** argv) {
         g_heapLoaded = heapInUse();
         g_stage = 100;
         std::printf("simmem: lot loaded in %.2f s, heap in use %.2f MiB\n", now() - start, g_heapLoaded / 1048576.0);
+        const auto fingerprint = [&] {
+            unsigned sum = 0;
+            simulation->world().nextAfter(0, [&](const ts2::sim::SimObject& o) {
+                sum = sum * 31 + static_cast<unsigned>(o.x) + 7 * static_cast<unsigned>(o.y) + static_cast<unsigned>(o.level);
+                return false;
+            });
+            return sum;
+        };
         const double ticking = now();
         for (std::size_t i = 0; i < ticks; ++i) {
             g_stage = 200 + static_cast<unsigned>(i);
@@ -288,6 +317,9 @@ int main(int argc, char** argv) {
             const auto ms = static_cast<unsigned>((now() - t0) * 1000);
             g_tickMsMax = ms > g_tickMsMax ? ms : g_tickMsMax;
             g_ticksDone = static_cast<unsigned>(i + 1);
+            if ((i + 1) % 5 == 0 && (i + 1) / 5 <= 96) {
+                g_fingerprints[(i + 1) / 5 - 1] = fingerprint();  // every 5 ticks, to find where two runs part
+            }
             g_ticksMs = static_cast<unsigned>((now() - ticking) * 1000);
         }
         g_stops = static_cast<unsigned>(simulation->stops().size());
@@ -305,6 +337,13 @@ int main(int argc, char** argv) {
             return false;
         });
         g_checksum = checksum;
+#ifndef __PS2__
+        if (std::getenv("SIMMEM_FINGERPRINTS") != nullptr) {
+            for (unsigned k = 0; k < 96 && k * 5 + 5 <= ticks; ++k) {
+                std::printf("fp %u %08x\n", (k + 1) * 5, g_fingerprints[k]);
+            }
+        }
+#endif
         g_walkers = walkers;
         std::printf("simmem: fingerprint %08x, %u Sims walking\n", checksum, walkers);
         g_heapAfter = heapInUse();
