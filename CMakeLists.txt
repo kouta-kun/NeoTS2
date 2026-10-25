@@ -444,6 +444,9 @@ else()
     add_executable(uidump tools/uidump/main.cpp)
     target_link_libraries(uidump PRIVATE ts2content project_warnings)
 
+    add_executable(opcodecount tools/opcodecount/main.cpp)
+    target_link_libraries(opcodecount PRIVATE ts2content project_warnings)
+
     add_executable(ts2index tools/ts2index/main.cpp)
     target_link_libraries(ts2index PRIVATE ts2content project_warnings)
 
