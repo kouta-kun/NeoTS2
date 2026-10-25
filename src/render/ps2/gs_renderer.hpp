@@ -70,6 +70,8 @@ public:
         std::size_t draws = 0, triangles = 0, drawn = 0, culled = 0, clipped = 0, uploads = 0, textureBytes = 0;
         // Seconds spent in each part of the frame (wall clock; in an emulator only their proportions mean anything).
         std::size_t vertices = 0, litHits = 0, litMisses = 0, litCacheKiB = 0;
+        std::size_t vuBatches = 0, vuCorners = 0, vuWaits = 0;
+        double vuBuild = 0, vuWait = 0;
         double collect = 0, expand = 0, light = 0, transform = 0, emit = 0, state = 0, submit = 0;
     };
     [[nodiscard]] const FrameStats& lastFrame() const { return frame_; }
@@ -86,7 +88,9 @@ private:
     [[nodiscard]] float lightMapFade() const override { return 0; }
     [[nodiscard]] bool skinReady(std::uint32_t) const override { return false; }
 
-    void drawList(const FrameView& f, const std::vector<Draw>& list, int blend);
+    void drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend);
+    void initVu();
+    void waitVuIdle() const;
     // The texture of scene image `index`, read and made when it is first drawn; null when there is none.
     GsTexture* textureFor(int index);
 
@@ -109,6 +113,16 @@ private:
     std::vector<float> screenXy_;
     std::vector<std::uint8_t> codes_;
     std::vector<std::uint32_t> visibleTris_, clippedTris_;
+    // VRAM the textures share: a ring, in the space the frame and Z buffers left. A texture that overlaps what comes next is let go.
+    std::uint32_t vramBegin_ = 0, vramEnd_ = 0, vramHead_ = 0;
+    std::vector<GsTexture*> vramList_;
+    struct VuSlot;
+    struct VuColors;
+    std::unique_ptr<VuSlot> slots_[2];
+    std::unordered_map<std::uint64_t, std::unique_ptr<VuColors>> litVu_;
+    std::size_t litVuBytes_ = 0, litVuBudget_ = 5 * 1024 * 1024;
+    unsigned slot_ = 0;
+    std::vector<float> rows_;  // vertex rows (see kVertexFloats) of a chunk being lit
     FrameStats frame_;
 };
 

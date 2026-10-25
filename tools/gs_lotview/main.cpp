@@ -94,6 +94,8 @@ int main(int argc, char** argv) {
                 break;
             }
             if (frame == 1) {
+                const auto& v = renderer.lastFrame();
+                std::printf("gs_lotview: vu: %zu batches, %zu corners; build %.2f s, send/wait %.2f s\n", v.vuBatches, v.vuCorners, v.vuBuild, v.vuWait);
                 std::printf("gs_lotview: %zu vertices in the draws, lit colours: %zu kept, %zu worked out, cache %zu KiB\n", renderer.lastFrame().vertices,
                             renderer.lastFrame().litHits, renderer.lastFrame().litMisses, renderer.lastFrame().litCacheKiB);
                 const auto& s = renderer.lastFrame();

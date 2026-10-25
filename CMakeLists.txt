@@ -354,12 +354,18 @@ target_link_libraries(ts2renderplan PUBLIC ts2scene PRIVATE project_warnings)
 
 # The PlayStation 2's renderer and a program that shows a baked lot with it (see docs/ps2-port-plan.md).
 if(PS2)
-    add_library(ts2gs src/render/ps2/gs_renderer.cpp)
+    # The VU1 microprogram, assembled with the toolchain's VU assembler.
+    set(TS2_VU1_SOUP ${CMAKE_BINARY_DIR}/vu1_soup.o)
+    add_custom_command(OUTPUT ${TS2_VU1_SOUP}
+        COMMAND $ENV{PS2DEV}/dvp/bin/dvp-as ${CMAKE_SOURCE_DIR}/src/render/ps2/vu1_soup.vsm -o ${TS2_VU1_SOUP}
+        DEPENDS ${CMAKE_SOURCE_DIR}/src/render/ps2/vu1_soup.vsm)
+    set_source_files_properties(${TS2_VU1_SOUP} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    add_library(ts2gs src/render/ps2/gs_renderer.cpp ${TS2_VU1_SOUP})
     target_include_directories(ts2gs PUBLIC $ENV{PS2DEV}/gsKit/include)
-    target_link_libraries(ts2gs PUBLIC ts2renderplan PRIVATE project_warnings)
+    target_link_libraries(ts2gs PUBLIC ts2renderplan PRIVATE project_warnings packet2 dma)
     add_executable(gs_lotview tools/gs_lotview/main.cpp)
     target_link_directories(gs_lotview PRIVATE $ENV{PS2DEV}/gsKit/lib)
-    target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit)
+    target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
 endif()
 

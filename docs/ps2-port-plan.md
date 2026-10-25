@@ -489,3 +489,21 @@ Left per frame: transform 1.46 s (1.29 M vertices), emit 0.26 s, the rest small.
 triangle (hard edges and texture seams), welding identical vertices removes only 12% (kept: 0.4 MiB smaller). The remaining work is the vector unit
 (transform, clip, cull, light and build packets on VU1), and drawing fewer vertices (distance LODs, smaller instances). A 16-bit colour buffer and Z
 would give the textures about 2.5 MiB of VRAM instead of 0.75 MB. Format is version 5: every array aligned for the type it is read as.
+
+**The vector unit (2026-10-25).** VU1 draws now (`src/render/ps2/vu1_soup.vsm`, built with `dvp-as`; `drawListVu`). Design, as it runs in PCSX2:
+- Primitives are **triangle soup** (three corners a triangle, no indices); at load the baked indexed meshes are expanded into per-corner arrays the
+  VIF can unpack straight from memory: positions as 4 x 16-bit (8 B), texture coordinates 2 x 16-bit, normals 4 x 8-bit, optional vertex colour and light-map
+  coordinates. 16-byte aligned, padded to 12 corners with degenerate triangles.
+- Per draw, one DMA chain on VIF1 (an END-terminated REF chain built by the EE, one at a time, two slots so the EE builds the next while the last is sent):
+  constants (matrix with the positions' range folded in, screen/uv/guard scales), then per batch of 156 corners: the GS state packet and vertices' GIF tag (UNPACK to
+  the double buffer's head), then positions, texture coordinates and colours unpacked with `STCYCL CL=3, WL=1` (write one quadword, skip two) so
+  the three arrays land interleaved as the GIF's packed ST/RGBAQ/XYZ2 expects, `MSCAL`. The microprogram transforms in place (itof, matrix, clip flags,
+  1/w, scale, ftoi) and `XGKICK`s the buffer: no copy, no indices. Corners outside the 3x guard band drop their triangle (ADC bit).
+- Lit colours are per corner (r, g, b, alpha/2), computed by the same `vertexColors` in chunks and cached (5 MiB).
+- Textures: gsKit's texture manager is not used (its uploads go through another GIF path and made the EE wait for the VU1 each time). A ring over the VRAM the
+  buffers left; an upload (image, palette, TEXFLUSH) goes at the head of the chain of the first draw that needs it, after a `FLUSHA`. Opaque draws are sorted by texture.
+- Not yet: back-face culling on the VU (every face is drawn), clipping of triangles that cross the guard band (they are dropped: needs an EE path for
+  primitives that cross the frustum, or a bound on triangle size from the converter), and the 15 microprogram cycles a corner could lose by software pipelining.
+
+N001 Lot 11, same camera: 17.9 s (EE only) -> 2.0 s (EE, cached colours) -> **0.33 s a frame** with VU1 (1.15 M corners, 9,858 batches, 3,295 draws, 276 texture uploads);
+EE build 0.12 s, lighting lookup 0.06, DMA waits 0.04 and the rest is PCSX2 running the VU1 and the GS. The remaining EE cost is per draw (uniforms, hashing, chain).
