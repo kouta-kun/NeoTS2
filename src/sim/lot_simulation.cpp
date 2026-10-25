@@ -22,6 +22,7 @@
 #include <cmath>
 #include <limits>
 #include <format>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <vector>
@@ -59,10 +60,29 @@ std::shared_ptr<LuaRuntime> loadScripts(const std::filesystem::path& install, Co
 
 } // namespace
 
+content::ResourceIndex loadPackages(const std::vector<std::filesystem::path>& packages) {
+    content::ResourceIndex index;
+    for (const auto& path : packages) {
+        index.addPackage(path);
+    }
+    return index;
+}
+
 LotSimulation::LotSimulation(const std::filesystem::path& install, const std::filesystem::path& lot,
                              std::function<void(const StepInfo&)> onLoadStep)
     : index_(loadCode(install, lot)), code_(index_), vm_(code_, {kMaxStepsPerRun, 64}, &world_),
       installedPacks_(content::installedPacksMask(content::findProducts(install))), motiveUpdate_(code_, installedPacks_) {
+    load(lot, &install, std::move(onLoadStep));
+}
+
+LotSimulation::LotSimulation(const std::vector<std::filesystem::path>& packages, std::uint32_t installedPacks, const std::filesystem::path& lot,
+                             std::function<void(const StepInfo&)> onLoadStep)
+    : index_(loadPackages(packages)), code_(index_), vm_(code_, {kMaxStepsPerRun, 64}, &world_), installedPacks_(installedPacks),
+      motiveUpdate_(code_, installedPacks_) {
+    load(lot, nullptr, std::move(onLoadStep));
+}
+
+void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem::path* install, std::function<void(const StepInfo&)> onLoadStep) {
     vm_.onInteractionStart = [this](const SimObject& sim, const QueuedInteraction& started) { logInteractionStart(sim, started); };
     lot_ = std::make_unique<const content::Lot>(content::loadLot(lot));
     const content::Lot& saved = *lot_;
@@ -91,7 +111,7 @@ LotSimulation::LotSimulation(const std::filesystem::path& install, const std::fi
     std::copy_n(saved.globals.begin(), std::min(saved.globals.size(), vm_.globals.size()), vm_.globals.begin());
     updateTimeOfDay(vm_.globals);
     const auto hood = content::neighborhoodPackage(content::neighborhoodOfLot(lot));
-    if (std::filesystem::exists(hood)) {
+    if (std::ifstream(hood, std::ios::binary).good()) {  // not std::filesystem::exists: on the PlayStation 2 its stat call stopped the program here (see docs/ps2-port-plan.md)
         const content::Neighborhood loaded = content::loadNeighborhood(hood);
         findHousehold(loaded, lot);
         world_.setNeighborhood(savedNeighborhood(loaded, content::neighborhoodIds(content::neighborhoodOfLot(lot).parent_path())));
@@ -113,9 +133,9 @@ LotSimulation::LotSimulation(const std::filesystem::path& install, const std::fi
         world_.weather() = loaded.weather.value_or(weather::Weather{});
         findCharacterFiles();
     }
-    if (const auto wants = content::wantsPackage(install)) {
+    if (const auto wants = install ? content::wantsPackage(*install) : std::nullopt) {
         auto defs = std::make_shared<content::WantDefinitions>(content::loadWantDefinitions(*wants));
-        if (const auto tuning = content::wantTuningPackage(install)) {
+        if (const auto tuning = content::wantTuningPackage(*install)) {
             const std::string text = content::loadWantTuning(*tuning);
             defs->categories = content::parseWantCategories(text);
             if (const auto influence = content::parseInfluenceCurve(text)) {
@@ -124,7 +144,7 @@ LotSimulation::LotSimulation(const std::filesystem::path& install, const std::fi
         }
         world_.setWantDefinitions(std::move(defs));
     }
-    world_.setScripts(loadScripts(install, code_));
+    world_.setScripts(install ? loadScripts(*install, code_) : nullptr);
     vm_.onStep = std::move(onLoadStep);
     startObjects();
     vm_.onStep = nullptr;
