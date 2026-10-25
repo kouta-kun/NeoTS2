@@ -26,7 +26,8 @@ int main(int argc, char** argv) {
     GSGLOBAL* gs = gsKit_init_global();
     gs->Width = 640;
     gs->Height = 448;
-    gs->PSM = GS_PSM_CT32;
+    gs->PSM = GS_PSM_CT16;
+    gs->Dithering = GS_SETTING_ON;
     gs->PSMZ = GS_PSMZ_24;
     gs->ZBuffering = GS_SETTING_ON;
     gs->DoubleBuffering = GS_SETTING_ON;
@@ -80,6 +81,7 @@ int main(int argc, char** argv) {
         auto prepared = renderer.prepareBaked(scene, std::move(meshes));
         memory("scene prepared");
         renderer.upload(std::move(prepared));
+        std::printf("gs_lotview: VRAM left for textures: %.2f MiB\n", (4194304 - gs->CurrentPointer) / 1048576.0);
         memory("uploaded");
         std::printf("gs_lotview: uploaded\n");
         ts2::render::Camera camera;
