@@ -1,0 +1,31 @@
+// Making a console texture (content/console_texture.hpp) of a decoded image: resampled to a power of two within a
+// size cap, then 4-bit if a 16-colour palette changes it by at most `paletteError` RMS levels, else 8-bit if 256 colours
+// change it by at most half that, else 32-bit. The smaller levels follow, sharing the palette.
+#pragma once
+
+#include "content/console_texture.hpp"
+#include "scene/scene.hpp"
+
+namespace ts2::render {
+
+struct ConvertOptions {
+    unsigned maxSide = 256;
+    unsigned minSide = 8;
+    double paletteError = 8;
+    bool dither = false;
+    bool mips = true;
+    bool palettes = true;  // false: always 32-bit (for pictures that change, like light maps)
+};
+
+struct ConvertedTexture {
+    content::ConsoleTexture texture;
+    double error = 0;  // RMS levels the palette changed it by (0 for 32-bit)
+    bool resized = false;
+};
+
+[[nodiscard]] ConvertedTexture convertTexture(const scene::Image& image, const ConvertOptions& options);
+
+// The texels of a console texture's largest level as RGBA, for looking at it.
+[[nodiscard]] scene::Image decodeConsoleTexture(const content::ConsoleTexture& texture);
+
+} // namespace ts2::render

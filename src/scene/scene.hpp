@@ -40,6 +40,9 @@ struct Image {
     // The smaller mip levels' pixels, each half the size of the one before (at least 1), when the
     // image brings its own. Otherwise the renderer makes them.
     std::vector<std::vector<std::uint8_t>> smallerLevels;
+    // A console texture (content/console_texture.hpp, serialized) in place of `rgba`, from a baked scene. The console renderer
+    // uploads it as it is; others don't know it.
+    std::vector<std::uint8_t> console;
 };
 
 // Layer: blended onto the opaque surface it lies on (same vertices), right after opaque surfaces

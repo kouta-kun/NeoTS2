@@ -5,6 +5,7 @@
 #include "content/console_texture.hpp"
 #include "content/mesh_decimate.hpp"
 #include "formats/scenegraph.hpp"
+#include "render/texture_convert.hpp"
 #include "render/texture_fit.hpp"
 #include "content/lot.hpp"
 #include "scene/assets.hpp"
@@ -146,90 +147,11 @@ struct TextureStats {
     std::size_t shrunk = 0;
 };
 
-// Appends indices as texels: 4-bit ones two to a byte, the first in the low nibble.
-void appendPacked(std::vector<std::uint8_t>& texels, const std::vector<std::uint8_t>& indices, unsigned bits) {
-    if (bits == 8) {
-        texels.insert(texels.end(), indices.begin(), indices.end());
-        return;
-    }
-    const std::size_t start = texels.size();
-    texels.resize(start + (indices.size() + 1) / 2, 0);
-    for (std::size_t i = 0; i < indices.size(); ++i) {
-        texels[start + i / 2] = static_cast<std::uint8_t>(texels[start + i / 2] | (indices[i] << ((i & 1) * 4)));
-    }
-}
-
-// Palette and indices of an image that has no more than 256 colours.
-bool toIndexed(const ts2::scene::Image& image, unsigned bits, ts2::content::ConsoleTexture& out) {
-    std::unordered_map<std::uint32_t, std::uint8_t> index;
-    out.palette.clear();
-    const std::size_t pixels = std::size_t(image.width) * image.height;
-    std::vector<std::uint8_t> indices(pixels);
-    for (std::size_t i = 0; i < pixels; ++i) {
-        std::uint32_t c;
-        std::memcpy(&c, &image.rgba[i * 4], 4);
-        auto it = index.find(c);
-        if (it == index.end()) {
-            if (index.size() >= (1u << bits)) {
-                return false;
-            }
-            it = index.emplace(c, static_cast<std::uint8_t>(index.size())).first;
-            out.palette.insert(out.palette.end(), image.rgba.begin() + std::ptrdiff_t(i * 4), image.rgba.begin() + std::ptrdiff_t(i * 4 + 4));
-        }
-        indices[i] = it->second;
-    }
-    out.bits = bits;
-    out.texels.clear();
-    appendPacked(out.texels, indices, bits);
-    return true;
-}
-
-// Index of the palette entry nearest an RGBA pixel.
-std::uint8_t nearest(const std::vector<std::uint8_t>& palette, const std::uint8_t* px) {
-    int best = 0;
-    long bestDistance = -1;
-    for (std::size_t i = 0; i < palette.size() / 4; ++i) {
-        long d = 0;
-        for (int c = 0; c < 4; ++c) {
-            const long diff = long(palette[i * 4 + std::size_t(c)]) - px[c];
-            d += diff * diff;
-        }
-        if (bestDistance < 0 || d < bestDistance) {
-            bestDistance = d;
-            best = static_cast<int>(i);
-        }
-    }
-    return static_cast<std::uint8_t>(best);
-}
-
-// The smaller levels of `base` (the picture at the texture's size), each from the picture itself, in the texture's depth
-// and palette, after the level already in `out.texels`.
-void addMips(const ts2::scene::Image& base, ts2::content::ConsoleTexture& out) {
-    namespace render = ts2::render;
-    out.mips = ts2::content::ConsoleTexture::levelCount(out.width, out.height);
-    for (unsigned level = 1; level < out.mips; ++level) {
-        const ts2::scene::Image small = render::stretched(base, out.width >> level, out.height >> level);
-        if (out.bits == 32) {
-            out.texels.insert(out.texels.end(), small.rgba.begin(), small.rgba.end());
-            continue;
-        }
-        std::vector<std::uint8_t> indices(std::size_t(small.width) * small.height);
-        for (std::size_t i = 0; i < indices.size(); ++i) {
-            indices[i] = nearest(out.palette, &small.rgba[i * 4]);
-        }
-        appendPacked(out.texels, indices, out.bits);
-    }
-}
-
 // Replaces each texture of the bank by its console form, and drops the large-level resources it read from.
 void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::BankResource>& gathered, const TextureOptions& options,
                      TextureStats& stats) {
     using ts2::content::ConsoleTexture;
     namespace render = ts2::render;
-    const render::TextureLimits limits{options.maxSide, 8};
-    ts2::render::QuantizeOptions quant;
-    quant.iterations = 3;
-    quant.dither = options.dither;
     std::vector<Key> remove;
     for (auto& [key, resource] : gathered) {
         if (key.type != kTxtr) {
@@ -253,38 +175,18 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
                 ++stats.failed;
                 continue;
             }
-            const unsigned tw = render::fitSide(image->width, limits), th = render::fitSide(image->height, limits);
-            ts2::scene::Image fitted = (tw == image->width && th == image->height) ? std::move(*image) : render::stretched(*image, tw, th);
-            stats.shrunk += (tw != info.width || th != info.height) ? 1 : 0;
-            bool alpha = false;
-            for (std::size_t i = 3; i < fitted.rgba.size(); i += 4) {
-                alpha = alpha || fitted.rgba[i] != 255;
-            }
-            ts2::scene::Image shown;  // what the console texture looks like
-            ConsoleTexture out;
-            out.width = fitted.width;
-            out.height = fitted.height;
-            out.hasAlpha = alpha;
-            double error = 0;
-            bool done = false;
-            for (unsigned bits : {4u, 8u}) {
-                const ts2::scene::Image reduced = render::quantized(fitted, 1u << bits, quant);
-                error = render::imageError(fitted, reduced);
-                if (error <= (bits == 4 ? options.paletteError : options.paletteError / 2) && toIndexed(reduced, bits, out)) {
-                    ++stats.byBits[bits == 4 ? 0 : 1];
-                    shown = reduced;
-                    done = true;
-                    break;
-                }
-            }
-            if (!done) {
-                out.bits = 32;
-                out.palette.clear();
-                out.texels = fitted.rgba;
-                shown = fitted;
-                error = 0;
-                ++stats.byBits[2];
-            }
+            ts2::render::ConvertOptions convert;
+            convert.maxSide = options.maxSide;
+            convert.paletteError = options.paletteError;
+            convert.dither = options.dither;
+            const ts2::render::ConvertedTexture converted = ts2::render::convertTexture(*image, convert);
+            const ConsoleTexture& out = converted.texture;
+            const double error = converted.error;
+            stats.shrunk += converted.resized ? 1 : 0;
+            ++stats.byBits[out.bits == 4 ? 0 : out.bits == 8 ? 1 : 2];
+            // What the console texture looks like, and the picture it was made from at its size, for the sheets.
+            const ts2::scene::Image shown = ts2::render::decodeConsoleTexture(out);
+            const ts2::scene::Image fitted = converted.resized ? render::stretched(*image, out.width, out.height) : *image;
             if (!options.sheetDir.empty() && (out.bits == 32 || error >= 5 || stats.count % 25 == 0)) {
                 const std::string base = options.sheetDir + "/" + std::to_string(stats.count);
                 std::ofstream(base + "_orig.rgba", std::ios::binary).write(reinterpret_cast<const char*>(fitted.rgba.data()), std::streamsize(fitted.rgba.size()));
@@ -293,7 +195,6 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
                     << stats.count << '\t' << name << '\t' << fitted.width << '\t' << fitted.height << '\t' << out.bits << '\t' << error
                     << '\t' << info.width << 'x' << info.height << '\n';
             }
-            addMips(fitted, out);
             stats.errorSum += error;
             stats.errorMax = std::max(stats.errorMax, error);
             resource.bytes = out.serialize();

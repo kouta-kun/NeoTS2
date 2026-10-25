@@ -349,7 +349,7 @@ endif()
 
 # What every renderer shares, apart from any graphics API: the CPU side of a scene, culling and
 # draw order, and the numbers each draw's shaders are given.
-add_library(ts2renderplan src/render/cpu_light.cpp src/render/fixed_layout.cpp src/render/frame_plan.cpp src/render/gl_subset.cpp src/render/mesh_pack.cpp src/render/shared_state.cpp src/render/terrain_mesh.cpp src/render/texture_fit.cpp)
+add_library(ts2renderplan src/render/cpu_light.cpp src/render/fixed_layout.cpp src/render/frame_plan.cpp src/render/gl_subset.cpp src/render/mesh_pack.cpp src/render/shared_state.cpp src/render/terrain_mesh.cpp src/render/texture_fit.cpp src/render/texture_convert.cpp src/render/console_scene.cpp)
 target_link_libraries(ts2renderplan PUBLIC ts2scene PRIVATE project_warnings)
 
 # Only the libraries above, with no window, graphics, tools or tests: for cross-compiling the engine's core for a
@@ -433,6 +433,8 @@ else()
     # Builds a lot's scene without a window and reports its memory and time (see the PlayStation 2 plan).
     add_executable(lotscene tools/lotscene/main.cpp app/lot_light.cpp)
     target_link_libraries(lotscene PRIVATE ts2sim ts2scene project_warnings)
+    add_executable(ts2bake tools/ts2bake/main.cpp app/lot_light.cpp)
+    target_link_libraries(ts2bake PRIVATE ts2sim ts2scene ts2renderplan project_warnings)
     add_executable(ts2bank tools/ts2bank/main.cpp)
     target_link_libraries(ts2bank PRIVATE ts2scene ts2renderplan project_warnings)
 
