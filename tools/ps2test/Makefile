@@ -20,3 +20,10 @@ gs_hello.elf: gs_hello.o
 
 host_read.elf: host_read.o
 	$(EE_CXX) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $^ $(EE_LDFLAGS) $(EE_LIBS)
+
+vu1_soup.o: vu1_soup.cpp
+	$(EE_CXX) $(EE_CXXFLAGS) $(EE_INCS) -I../../src -c $< -o $@
+vu1_soup.elf: vu1_soup.o vu1_soup.vu.o
+	$(EE_CXX) -T$(EE_LINKFILE) $(EE_OPTFLAGS) -o $@ $^ $(EE_LDFLAGS) -lgskit -ldmakit -lpacket2 -ldma $(EE_LIBS)
+vu1_soup.vu.o: vu1_soup.vsm
+	dvp-as $< -o $@
