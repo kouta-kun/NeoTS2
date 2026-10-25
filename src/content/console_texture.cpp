@@ -1,5 +1,6 @@
 #include "content/console_texture.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -17,8 +18,21 @@ static_assert(sizeof(Header) == 12);
 
 } // namespace
 
-std::size_t ConsoleTexture::texelBytes(std::uint32_t width, std::uint32_t height, unsigned bits) {
-    return (static_cast<std::size_t>(width) * height * bits + 7) / 8;
+std::size_t ConsoleTexture::texelBytes(std::uint32_t width, std::uint32_t height, unsigned bits, unsigned mips) {
+    std::size_t total = 0;
+    for (unsigned level = 0; level < mips; ++level) {
+        const std::size_t w = std::max<std::size_t>(1, width >> level), h = std::max<std::size_t>(1, height >> level);
+        total += (w * h * bits + 7) / 8;
+    }
+    return total;
+}
+
+unsigned ConsoleTexture::levelCount(std::uint32_t width, std::uint32_t height) {
+    unsigned n = 1;
+    while (n < 15 && (width >> n) >= 8 && (height >> n) >= 8) {
+        ++n;
+    }
+    return n;
 }
 
 bool ConsoleTexture::matches(std::span<const std::uint8_t> bytes) {
@@ -31,7 +45,7 @@ std::vector<std::uint8_t> ConsoleTexture::serialize() const {
     h.width = static_cast<std::uint16_t>(width);
     h.height = static_cast<std::uint16_t>(height);
     h.bits = static_cast<std::uint8_t>(bits);
-    h.flags = hasAlpha ? 1 : 0;
+    h.flags = static_cast<std::uint8_t>((hasAlpha ? 1 : 0) | ((mips - 1) << 4));
     h.paletteSize = static_cast<std::uint16_t>(palette.size() / 4);
     std::vector<std::uint8_t> out(sizeof h + palette.size() + texels.size());
     std::memcpy(out.data(), &h, sizeof h);
@@ -58,8 +72,9 @@ ConsoleTexture ConsoleTexture::parse(std::span<const std::uint8_t> bytes) {
     t.height = h.height;
     t.bits = h.bits;
     t.hasAlpha = (h.flags & 1) != 0;
+    t.mips = (h.flags >> 4) + 1u;
     const std::size_t paletteBytes = static_cast<std::size_t>(h.paletteSize) * 4;
-    const std::size_t texelBytes = ConsoleTexture::texelBytes(t.width, t.height, t.bits);
+    const std::size_t texelBytes = ConsoleTexture::texelBytes(t.width, t.height, t.bits, t.mips);
     if (sizeof h + paletteBytes + texelBytes != bytes.size()) {
         throw std::runtime_error("not a console texture: wrong size");
     }

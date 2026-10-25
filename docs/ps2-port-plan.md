@@ -384,8 +384,9 @@ use; it grows only with lots that bring other objects. Unconverted.
 **Texture conversion** (`ts2bank --textures [--max-side N] [--palette-error E] [--dither]`, format in
 `src/content/console_texture.hpp`): each TXTR is decoded, resampled to a power of two no larger than `--max-side` (default 256),
 and stored as 4-bit if a 16-colour palette changes it by at most E RMS levels (default 8), else 8-bit if 256 colours change it by
-at most E/2, else 32-bit. Bump maps and cube maps are dropped. The large-level (LIFO) resources fold into the texture. Only the
-largest level is stored so far (mips would add about a third). Results for the all-lots base bank (1,868 textures):
+at most E/2, else 32-bit. Bump maps and cube maps are dropped. The large-level (LIFO) resources fold into the texture. The
+smaller levels follow (halved down to 8 texels, one palette for all levels, each level made from the picture and mapped to the
+nearest palette colour). Results for the all-lots base bank (1,868 textures):
 
 | Setting | Textures | Bank (all resources) |
 |---|---|---|
@@ -396,3 +397,9 @@ RMS error over the textures: mean 2.8, max 8.0 levels. Meshes are now the larges
 yet: which 80 textures stay 32-bit, and how the 256 cap looks on Sims and objects. One lot's textures (N001 Lot 11): 54 MiB -> 9.6 MiB
 at 256, 29 MiB at 512 with error 5. Runtime composites (Sims' skins, light maps) are not covered; see the discussion of runtime
 pixel edits.
+
+**Mips in the console textures.** The all-lots base bank with mips: textures 82 MiB (62 MiB without, as predicted +33%), whole bank
+194 MiB. Contact sheets of original and converted textures (the 80 that stay 32-bit, the 54 with the largest error, a sample)
+were looked at: the palettised ones look right in the sample; the worst 4-bit ones (error 7-8) show some banding on soft
+gradients (a green panel, a bench's shading), which 8-bit or dithering would fix at some cost. The owner judged them good enough;
+the thresholds can be revisited (`--palette-error`, `--dither`). The mip levels themselves have not been looked at.

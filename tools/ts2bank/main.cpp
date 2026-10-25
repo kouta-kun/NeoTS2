@@ -51,6 +51,19 @@ struct TextureStats {
     std::size_t shrunk = 0;
 };
 
+// Appends indices as texels: 4-bit ones two to a byte, the first in the low nibble.
+void appendPacked(std::vector<std::uint8_t>& texels, const std::vector<std::uint8_t>& indices, unsigned bits) {
+    if (bits == 8) {
+        texels.insert(texels.end(), indices.begin(), indices.end());
+        return;
+    }
+    const std::size_t start = texels.size();
+    texels.resize(start + (indices.size() + 1) / 2, 0);
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+        texels[start + i / 2] = static_cast<std::uint8_t>(texels[start + i / 2] | (indices[i] << ((i & 1) * 4)));
+    }
+}
+
 // Palette and indices of an image that has no more than 256 colours.
 bool toIndexed(const ts2::scene::Image& image, unsigned bits, ts2::content::ConsoleTexture& out) {
     std::unordered_map<std::uint32_t, std::uint8_t> index;
@@ -71,15 +84,46 @@ bool toIndexed(const ts2::scene::Image& image, unsigned bits, ts2::content::Cons
         indices[i] = it->second;
     }
     out.bits = bits;
-    if (bits == 4) {
-        out.texels.assign((pixels + 1) / 2, 0);
-        for (std::size_t i = 0; i < pixels; ++i) {
-            out.texels[i / 2] = static_cast<std::uint8_t>(out.texels[i / 2] | (indices[i] << ((i & 1) * 4)));
-        }
-    } else {
-        out.texels = std::move(indices);
-    }
+    out.texels.clear();
+    appendPacked(out.texels, indices, bits);
     return true;
+}
+
+// Index of the palette entry nearest an RGBA pixel.
+std::uint8_t nearest(const std::vector<std::uint8_t>& palette, const std::uint8_t* px) {
+    int best = 0;
+    long bestDistance = -1;
+    for (std::size_t i = 0; i < palette.size() / 4; ++i) {
+        long d = 0;
+        for (int c = 0; c < 4; ++c) {
+            const long diff = long(palette[i * 4 + std::size_t(c)]) - px[c];
+            d += diff * diff;
+        }
+        if (bestDistance < 0 || d < bestDistance) {
+            bestDistance = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return static_cast<std::uint8_t>(best);
+}
+
+// The smaller levels of `base` (the picture at the texture's size), each from the picture itself, in the texture's depth
+// and palette, after the level already in `out.texels`.
+void addMips(const ts2::scene::Image& base, ts2::content::ConsoleTexture& out) {
+    namespace render = ts2::render;
+    out.mips = ts2::content::ConsoleTexture::levelCount(out.width, out.height);
+    for (unsigned level = 1; level < out.mips; ++level) {
+        const ts2::scene::Image small = render::stretched(base, out.width >> level, out.height >> level);
+        if (out.bits == 32) {
+            out.texels.insert(out.texels.end(), small.rgba.begin(), small.rgba.end());
+            continue;
+        }
+        std::vector<std::uint8_t> indices(std::size_t(small.width) * small.height);
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            indices[i] = nearest(out.palette, &small.rgba[i * 4]);
+        }
+        appendPacked(out.texels, indices, out.bits);
+    }
 }
 
 // Replaces each texture of the bank by its console form, and drops the large-level resources it read from.
@@ -154,6 +198,7 @@ void convertTextures(ts2::scene::Assets& assets, std::map<Key, ts2::content::Ban
                     << stats.count << '\t' << name << '\t' << fitted.width << '\t' << fitted.height << '\t' << out.bits << '\t' << error
                     << '\t' << info.width << 'x' << info.height << '\n';
             }
+            addMips(fitted, out);
             stats.errorSum += error;
             stats.errorMax = std::max(stats.errorMax, error);
             resource.bytes = out.serialize();
