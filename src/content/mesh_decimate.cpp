@@ -64,7 +64,7 @@ struct Edge {
 
 class Simplifier {
 public:
-    Simplifier(std::vector<Vec3> positions, const std::vector<std::uint16_t>& indices, double errorFraction, double partKeep)
+    Simplifier(std::vector<Vec3> positions, const std::vector<std::uint32_t>& indices, double errorFraction, double partKeep)
         : pos_(std::move(positions)) {
         Vec3 lo = pos_.empty() ? Vec3{} : pos_[0], hi = lo;
         for (const Vec3& p : pos_) {
@@ -137,9 +137,9 @@ public:
     }
 
     // The triangles left, and for each vertex that is used, its new index (others are -1).
-    std::vector<std::uint16_t> result(std::vector<std::int32_t>& remap) const {
+    std::vector<std::uint32_t> result(std::vector<std::int32_t>& remap) const {
         remap.assign(pos_.size(), -1);
-        std::vector<std::uint16_t> out;
+        std::vector<std::uint32_t> out;
         std::int32_t next = 0;
         for (const Triangle& t : tris_) {
             if (!t.alive) {
@@ -149,7 +149,7 @@ public:
                 if (remap[v] < 0) {
                     remap[v] = next++;
                 }
-                out.push_back(static_cast<std::uint16_t>(remap[v]));
+                out.push_back(static_cast<std::uint32_t>(remap[v]));
             }
         }
         return out;
@@ -443,6 +443,23 @@ std::optional<std::vector<std::uint8_t>> perVertex(const sg::Mesh& mesh, const s
 
 } // namespace
 
+IndexedReduction reduceIndexed(const std::vector<float>& positions, const std::vector<std::uint32_t>& indices, double keep, double maxError) {
+    IndexedReduction r;
+    std::vector<Vec3> p(positions.size() / 3);
+    for (std::size_t v = 0; v < p.size(); ++v) {
+        p[v] = {positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]};
+    }
+    Simplifier simplifier(std::move(p), indices, maxError, keep * 0.75);
+    const std::size_t before = simplifier.triangles();
+    if (before < kMinTriangles) {
+        return r;
+    }
+    simplifier.reduceTo(std::max<std::size_t>(kMinTriangles / 2, static_cast<std::size_t>(std::ceil(double(before) * keep))));
+    r.indices = simplifier.result(r.remap);
+    r.reduced = r.indices.size() / 3 < before;
+    return r;
+}
+
 sg::Mesh decimate(const sg::Mesh& mesh, double keep, double maxError, DecimateStats& stats) {
     sg::Mesh out = mesh;
     std::vector<sg::ElementLink> links = mesh.links;
@@ -490,11 +507,12 @@ sg::Mesh decimate(const sg::Mesh& mesh, double keep, double maxError, DecimateSt
         for (std::size_t v = 0; v < p.size(); ++v) {
             p[v] = {positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]};
         }
-        Simplifier simplifier(std::move(p), group.indices, maxError, keep * 0.75);
+        Simplifier simplifier(std::move(p), std::vector<std::uint32_t>(group.indices.begin(), group.indices.end()), maxError, keep * 0.75);
         const std::size_t target = std::max<std::size_t>(kMinTriangles / 2, static_cast<std::size_t>(std::ceil(double(simplifier.triangles()) * keep)));
         simplifier.reduceTo(target);
         std::vector<std::int32_t> remap;
-        std::vector<std::uint16_t> indices = simplifier.result(remap);
+        const std::vector<std::uint32_t> reducedIndices = simplifier.result(remap);
+        std::vector<std::uint16_t> indices(reducedIndices.begin(), reducedIndices.end());
         if (indices.size() / 3 >= before) {
             skip(stats.skippedStuck, stats.trianglesStuck);
             continue;

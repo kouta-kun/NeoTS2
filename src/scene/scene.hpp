@@ -43,6 +43,9 @@ struct Image {
     // A console texture (content/console_texture.hpp, serialized) in place of `rgba`, from a baked scene. The console renderer
     // uploads it as it is; others don't know it.
     std::vector<std::uint8_t> console;
+    // Where it is in the baked file when it is not held in `console` (see render/console_scene.hpp): its size is 0 when it is.
+    std::uint64_t consoleOffset = 0;
+    std::uint32_t consoleSize = 0;
 };
 
 // Layer: blended onto the opaque surface it lies on (same vertices), right after opaque surfaces

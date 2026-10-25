@@ -22,6 +22,10 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--max-side" && i + 1 < argc) {
             options.maxSide = static_cast<unsigned>(std::stoul(argv[++i]));
+        } else if (a == "--mesh-keep" && i + 1 < argc) {
+            options.meshKeep = std::stod(argv[++i]);
+        } else if (a == "--mesh-error" && i + 1 < argc) {
+            options.meshError = std::stod(argv[++i]);
         } else if (a == "--palette-error" && i + 1 < argc) {
             options.paletteError = std::stod(argv[++i]);
         } else {
@@ -29,7 +33,7 @@ int main(int argc, char** argv) {
         }
     }
     if (args.size() != 3) {
-        std::fprintf(stderr, "Usage: ts2bake <install-folder> <lot.package> <out.cscene> [--max-side N] [--palette-error E]\n");
+        std::fprintf(stderr, "Usage: ts2bake <install-folder> <lot.package> <out.cscene> [--max-side N] [--palette-error E] [--mesh-keep K [--mesh-error F]]\n");
         return 1;
     }
     try {
@@ -47,9 +51,9 @@ int main(int argc, char** argv) {
         ts2::render::BakeStats stats;
         const auto bytes = ts2::render::bakeScene(scene, options, &stats);
         std::ofstream(args[2], std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        std::printf("baked %.2f MiB: images %.2f MiB (4-bit %zu, 8-bit %zu, 32-bit %zu), meshes %.2f MiB (%zu primitives, %zu triangles), rest %.2f MiB\n",
+        std::printf("baked %.2f MiB: images %.2f MiB (4-bit %zu, 8-bit %zu, 32-bit %zu), meshes %.2f MiB (%zu primitives, %zu triangles from %zu), rest %.2f MiB\n",
                     double(bytes.size()) / 1048576.0, double(stats.imageBytes) / 1048576.0, stats.byBits[0], stats.byBits[1], stats.byBits[2],
-                    double(stats.meshBytes) / 1048576.0, stats.primitives, stats.triangles, double(stats.otherBytes) / 1048576.0);
+                    double(stats.meshBytes) / 1048576.0, stats.primitives, stats.triangles, stats.trianglesBefore, double(stats.otherBytes) / 1048576.0);
         const ts2::scene::Scene back = ts2::render::readBakedScene(bytes);
         const bool same = back.images.size() == scene.images.size() && back.materials.size() == scene.materials.size() &&
                           back.meshes.size() == scene.meshes.size() && back.instances.size() == scene.instances.size();

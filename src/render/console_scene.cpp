@@ -1,6 +1,9 @@
 #include "render/console_scene.hpp"
 
+#include "content/mesh_decimate.hpp"
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <stdexcept>
@@ -10,11 +13,12 @@ namespace ts2::render {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x31435343;  // "CSC1"
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 3;
 
 class Out {
 public:
     void u8(std::uint8_t v) { bytes.push_back(v); }
+    void u16(std::uint16_t v) { raw(&v, 2); }
     void u32(std::uint32_t v) { raw(&v, 4); }
     void i32(std::int32_t v) { raw(&v, 4); }
     void f32(float v) { raw(&v, 4); }
@@ -36,6 +40,7 @@ class In {
 public:
     explicit In(std::span<const std::uint8_t> data) : data_(data) {}
     std::uint8_t u8() { std::uint8_t v; raw(&v, 1); return v; }
+    std::uint16_t u16() { std::uint16_t v; raw(&v, 2); return v; }
     std::uint32_t u32() { std::uint32_t v; raw(&v, 4); return v; }
     std::int32_t i32() { std::int32_t v; raw(&v, 4); return v; }
     float f32() { float v; raw(&v, 4); return v; }
@@ -142,16 +147,73 @@ scene::Material readMaterial(In& in) {
     return m;
 }
 
+// A list of floats as 16-bit values across their own range (a mesh's positions, texture coordinates): the range (min and
+// max, 8 bytes), then a u16 for each.
+void writeQuantized(Out& o, const std::vector<float>& v) {
+    o.u32(static_cast<std::uint32_t>(v.size()));
+    if (v.empty()) {
+        return;
+    }
+    const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
+    o.f32(*lo);
+    o.f32(*hi);
+    const float range = *hi - *lo;
+    for (const float f : v) {
+        o.u16(range > 0 ? static_cast<std::uint16_t>(std::lround((f - *lo) / range * 65535.0f)) : 0);
+    }
+}
+
+std::vector<float> readQuantized(In& in) {
+    std::vector<float> v(in.count(2));
+    if (v.empty()) {
+        return v;
+    }
+    const float lo = in.f32(), hi = in.f32();
+    for (auto& f : v) {
+        f = lo + (hi - lo) * (static_cast<float>(in.u16()) / 65535.0f);
+    }
+    return v;
+}
+
+// Floats in -1..1 (normals) or 0..1 (colours, alphas, light-map coordinates) as bytes or 16-bit values.
+void writeUnit(Out& o, const std::vector<float>& v, bool signedValues, bool wide) {
+    o.u32(static_cast<std::uint32_t>(v.size()));
+    for (const float f : v) {
+        const float c = std::clamp(f, signedValues ? -1.0f : 0.0f, 1.0f);
+        if (wide) {
+            o.u16(static_cast<std::uint16_t>(std::lround(c * 65535.0f)));
+        } else if (signedValues) {
+            o.u8(static_cast<std::uint8_t>(static_cast<std::int8_t>(std::lround(c * 127.0f))));
+        } else {
+            o.u8(static_cast<std::uint8_t>(std::lround(c * 255.0f)));
+        }
+    }
+}
+
+std::vector<float> readUnit(In& in, bool signedValues, bool wide) {
+    std::vector<float> v(in.count(wide ? 2 : 1));
+    for (auto& f : v) {
+        if (wide) {
+            f = static_cast<float>(in.u16()) / 65535.0f;
+        } else if (signedValues) {
+            f = static_cast<float>(static_cast<std::int8_t>(in.u8())) / 127.0f;
+        } else {
+            f = static_cast<float>(in.u8()) / 255.0f;
+        }
+    }
+    return v;
+}
+
 void writePrimitive(Out& o, const scene::Primitive& p) {
     o.i32(p.material);
     o.str(p.group);
-    o.floatList(p.positions);
-    o.floatList(p.normals);
-    o.floatList(p.uvs);
-    o.floatList(p.alphas);
-    o.floatList(p.colors);
-    o.floatList(p.lightUvs);
-    o.floatList(p.weights);
+    writeQuantized(o, p.positions);
+    writeUnit(o, p.normals, true, false);
+    writeQuantized(o, p.uvs);
+    writeUnit(o, p.alphas, false, false);
+    writeUnit(o, p.colors, false, false);
+    writeUnit(o, p.lightUvs, false, true);
+    writeUnit(o, p.weights, false, false);
     o.bytesList(p.joints);
     // Indices fit 16 bits for nearly everything.
     const bool wide = !p.positions.empty() && p.positions.size() / 3 > 65535;
@@ -161,8 +223,7 @@ void writePrimitive(Out& o, const scene::Primitive& p) {
         if (wide) {
             o.u32(i);
         } else {
-            o.u8(static_cast<std::uint8_t>(i));
-            o.u8(static_cast<std::uint8_t>(i >> 8));
+            o.u16(static_cast<std::uint16_t>(i));
         }
     }
     o.floats(p.origin);
@@ -172,23 +233,18 @@ scene::Primitive readPrimitive(In& in) {
     scene::Primitive p;
     p.material = in.i32();
     p.group = in.str();
-    p.positions = in.floatList();
-    p.normals = in.floatList();
-    p.uvs = in.floatList();
-    p.alphas = in.floatList();
-    p.colors = in.floatList();
-    p.lightUvs = in.floatList();
-    p.weights = in.floatList();
+    p.positions = readQuantized(in);
+    p.normals = readUnit(in, true, false);
+    p.uvs = readQuantized(in);
+    p.alphas = readUnit(in, false, false);
+    p.colors = readUnit(in, false, false);
+    p.lightUvs = readUnit(in, false, true);
+    p.weights = readUnit(in, false, false);
     p.joints = in.bytesList();
     const bool wide = in.flag();
     p.indices.resize(in.count(wide ? 4 : 2));
     for (auto& i : p.indices) {
-        if (wide) {
-            i = in.u32();
-        } else {
-            const std::uint32_t lo = in.u8();
-            i = lo | (static_cast<std::uint32_t>(in.u8()) << 8);
-        }
+        i = wide ? in.u32() : in.u16();
     }
     p.origin = in.floats<3>();
     return p;
@@ -246,6 +302,54 @@ scene::Instance readInstance(In& in) {
     return x;
 }
 
+// The primitive with fewer triangles, its per-vertex data carried along to the vertices that are left.
+scene::Primitive reducedPrimitive(const scene::Primitive& p, const ConvertOptions& options) {
+    const std::size_t vertices = p.positions.size() / 3;
+    if (vertices == 0 || p.indices.size() < 72) {
+        return p;
+    }
+    content::IndexedReduction r = content::reduceIndexed(p.positions, p.indices, options.meshKeep, options.meshError);
+    if (!r.reduced) {
+        return p;
+    }
+    std::size_t kept = 0;
+    for (const auto v : r.remap) {
+        kept = std::max<std::size_t>(kept, v < 0 ? 0 : static_cast<std::size_t>(v) + 1);
+    }
+    scene::Primitive q = p;
+    q.indices = std::move(r.indices);
+    const auto carry = [&](const std::vector<float>& from, std::size_t stride) {
+        std::vector<float> out;
+        if (from.size() != vertices * stride) {
+            return from.empty() ? out : from;  // not per vertex as expected: leave as it is
+        }
+        out.resize(kept * stride);
+        for (std::size_t v = 0; v < vertices; ++v) {
+            if (r.remap[v] >= 0) {
+                std::copy_n(&from[v * stride], stride, &out[static_cast<std::size_t>(r.remap[v]) * stride]);
+            }
+        }
+        return out;
+    };
+    q.positions = carry(p.positions, 3);
+    q.normals = carry(p.normals, 3);
+    q.uvs = carry(p.uvs, 2);
+    q.alphas = carry(p.alphas, 1);
+    q.colors = carry(p.colors, 3);
+    q.lightUvs = carry(p.lightUvs, 2);
+    q.tangents = carry(p.tangents, 3);
+    q.weights = carry(p.weights, 4);
+    if (p.joints.size() == vertices * 4) {
+        q.joints.assign(kept * 4, 0);
+        for (std::size_t v = 0; v < vertices; ++v) {
+            if (r.remap[v] >= 0) {
+                std::copy_n(&p.joints[v * 4], 4, &q.joints[static_cast<std::size_t>(r.remap[v]) * 4]);
+            }
+        }
+    }
+    return q;
+}
+
 } // namespace
 
 std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOptions& options, BakeStats* stats) {
@@ -266,8 +370,7 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     }
 
     Out o;
-    o.u32(kMagic);
-    o.u32(kVersion);
+    std::vector<std::vector<std::uint8_t>> blobs;
     o.flag(scene.objectLighting.has_value());
     if (scene.objectLighting) writeLighting(o, *scene.objectLighting);
     o.u32(static_cast<std::uint32_t>(scene.lightSets.size()));
@@ -283,6 +386,8 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     const std::size_t afterHeader = o.bytes.size();
 
     o.u32(static_cast<std::uint32_t>(scene.images.size()));
+    const std::size_t imageTable = o.bytes.size();
+    o.bytes.resize(o.bytes.size() + scene.images.size() * 16);  // each image's offset, size, width and height, filled in below
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
         const scene::Image& image = scene.images[i];
         content::ConsoleTexture texture;
@@ -300,12 +405,10 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
             texture = convertTexture(image, options).texture;
         }
         ++st.byBits[texture.bits == 4 ? 0 : texture.bits == 8 ? 1 : 2];
-        const auto blob = texture.serialize();
-        o.bytesList(blob);
-        st.imageBytes += blob.size();
+        blobs.push_back(texture.serialize());
+        st.imageBytes += blobs.back().size();
         ++st.images;
     }
-    const std::size_t afterImages = o.bytes.size();
 
     o.u32(static_cast<std::uint32_t>(scene.materials.size()));
     for (scene::Material m : scene.materials) {
@@ -317,9 +420,11 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     for (const scene::Mesh& mesh : scene.meshes) {
         o.str(mesh.name);
         o.u32(static_cast<std::uint32_t>(mesh.primitives.size()));
-        for (const auto& p : mesh.primitives) {
+        for (const auto& original : mesh.primitives) {
+            const scene::Primitive p = options.meshKeep < 1 ? reducedPrimitive(original, options) : original;
             writePrimitive(o, p);
             ++st.primitives;
+            st.trianglesBefore += original.indices.size() / 3;
             st.triangles += p.indices.size() / 3;
         }
         o.u32(static_cast<std::uint32_t>(mesh.skin.size()));
@@ -338,17 +443,32 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
         writeInstance(o, x);
         ++st.instances;
     }
-    st.otherBytes = o.bytes.size() - st.meshBytes - st.imageBytes;
+    st.otherBytes = o.bytes.size() - st.meshBytes - scene.images.size() * 16;
     (void)afterHeader;
-    (void)afterImages;
-    return std::move(o.bytes);
+    // The images follow the head, each starting on a 16-byte boundary (the DMA reads them).
+    std::uint32_t at = 0;
+    for (std::size_t i = 0; i < blobs.size(); ++i) {
+        const auto info = content::ConsoleTextureView::of(blobs[i]);
+        const std::uint32_t fields[4] = {at, static_cast<std::uint32_t>(blobs[i].size()), info.width, info.height};
+        std::memcpy(&o.bytes[imageTable + i * 16], fields, 16);
+        at += static_cast<std::uint32_t>((blobs[i].size() + 15) / 16 * 16);
+    }
+    std::vector<std::uint8_t> file;
+    const std::uint32_t preamble[3] = {kMagic, kVersion, static_cast<std::uint32_t>(o.bytes.size())};
+    file.resize(kBakedPreambleSize);
+    std::memcpy(file.data(), preamble, 12);
+    file.insert(file.end(), o.bytes.begin(), o.bytes.end());
+    for (const auto& blob : blobs) {
+        file.insert(file.end(), blob.begin(), blob.end());
+        file.resize((file.size() + 15) / 16 * 16, 0);
+    }
+    return file;
 }
 
-scene::Scene readBakedScene(std::span<const std::uint8_t> bytes) {
-    In in(bytes);
-    if (in.u32() != kMagic || in.u32() != kVersion) {
-        throw std::runtime_error("not a baked scene");
-    }
+namespace {
+
+// Reads the head from `in`, which stands just after the preamble; the images' offsets are made absolute with `imageArea`.
+scene::Scene readHead(In& in, std::uint64_t imageArea) {
     scene::Scene s;
     if (in.flag()) s.objectLighting = readLighting(in);
     s.lightSets.resize(in.count(40));
@@ -362,12 +482,12 @@ scene::Scene readBakedScene(std::span<const std::uint8_t> bytes) {
         maps.walls = in.i32();
         s.lightMaps = std::move(maps);
     }
-    s.images.resize(in.count(4));
+    s.images.resize(in.count(16));
     for (auto& image : s.images) {
-        image.console = in.bytesList();
-        const auto texture = content::ConsoleTexture::parse(image.console);
-        image.width = texture.width;
-        image.height = texture.height;
+        image.consoleOffset = imageArea + in.u32();
+        image.consoleSize = in.u32();
+        image.width = in.u32();
+        image.height = in.u32();
     }
     s.materials.resize(in.count(40));
     for (auto& m : s.materials) m = readMaterial(in);
@@ -386,6 +506,46 @@ scene::Scene readBakedScene(std::span<const std::uint8_t> bytes) {
     }
     s.instances.resize(in.count(100));
     for (auto& x : s.instances) x = readInstance(in);
+    return s;
+}
+
+std::uint32_t checkedHeadSize(std::span<const std::uint8_t> preamble) {
+    std::uint32_t fields[3];
+    if (preamble.size() < kBakedPreambleSize) {
+        throw std::runtime_error("not a baked scene: too short");
+    }
+    std::memcpy(fields, preamble.data(), 12);
+    if (fields[0] != kMagic || fields[1] != kVersion) {
+        throw std::runtime_error("not a baked scene");
+    }
+    return fields[2];
+}
+
+} // namespace
+
+std::size_t bakedHeadSize(std::span<const std::uint8_t> preamble) {
+    return kBakedPreambleSize + checkedHeadSize(preamble);
+}
+
+scene::Scene readBakedHead(std::span<const std::uint8_t> head) {
+    const std::uint32_t size = checkedHeadSize(head);
+    if (head.size() < kBakedPreambleSize + size) {
+        throw std::runtime_error("baked scene: head truncated");
+    }
+    In in(head.subspan(kBakedPreambleSize, size));
+    return readHead(in, kBakedPreambleSize + size);
+}
+
+scene::Scene readBakedScene(std::span<const std::uint8_t> bytes) {
+    scene::Scene s = readBakedHead(bytes);
+    for (auto& image : s.images) {
+        if (image.consoleOffset + image.consoleSize > bytes.size()) {
+            throw std::runtime_error("baked scene: image past the end");
+        }
+        image.console.assign(bytes.begin() + static_cast<std::ptrdiff_t>(image.consoleOffset),
+                             bytes.begin() + static_cast<std::ptrdiff_t>(image.consoleOffset + image.consoleSize));
+        image.consoleSize = 0;
+    }
     return s;
 }
 

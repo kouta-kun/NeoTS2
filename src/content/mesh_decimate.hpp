@@ -6,6 +6,8 @@
 #include "formats/scenegraph.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace ts2::content {
 
@@ -18,6 +20,16 @@ struct DecimateStats {
     std::size_t trianglesBefore = 0;
     std::size_t trianglesAfter = 0;
 };
+
+// The same for one indexed triangle list (the scene's primitives): `positions` is x, y, z per vertex. When the list was reduced,
+// `indices` is the new list and `remap` gives each old vertex its new index (-1: no longer used), so the caller can carry its
+// other per-vertex data along. Lists under 24 triangles are left alone (reduced is false).
+struct IndexedReduction {
+    bool reduced = false;
+    std::vector<std::uint32_t> indices;
+    std::vector<std::int32_t> remap;
+};
+[[nodiscard]] IndexedReduction reduceIndexed(const std::vector<float>& positions, const std::vector<std::uint32_t>& indices, double keep, double maxError);
 
 // The mesh with about `keep` (0 to 1) of each reducible group's triangles, fewer being taken out where more would move the
 // surface further than `maxError` times the group's size (the root of the mean squared distance over the surface a collapse

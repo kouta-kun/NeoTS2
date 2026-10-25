@@ -448,3 +448,16 @@ kerb and a lamp, perspective-correct, Z-buffered. How it works now:
 - Z is 24-bit: depth here runs 1 at the near plane to 0 at the far one, and a 16-bit Z buffer could not separate surfaces 0.01 apart.
 - Speed in PCSX2 (software GS on llvmpipe, so only the EE side means anything): about 1.7 s a frame for 31.5k drawn triangles, all on the EE.
   That is the cost the vector unit is for; nothing here is measured on a console.
+
+**Memory first (2026-10-25).** The first N001 Lot 11 run (33 MiB baked file read into one buffer) crashed on the EE's 32 MB, as the sheet
+predicted. So the baked file changed: vertices are stored quantised (16-bit positions and texture coordinates over the primitive's
+own range, 8-bit normals and colours, 16-bit light-map coordinates), meshes can be reduced while baking (`ts2bake --mesh-keep 0.2
+--mesh-error 0.1`: Lot 11 goes from 201k to 86k triangles), and the file is a **head** (everything but pixels, 3.7 MiB for Lot 11)
+followed by the **images**, which the console reads from the disc when a draw first needs them (`GsRenderer::setImageSource`, an LRU
+kept under a byte budget, never letting go of a texture drawn this frame or the last). Lot 11: 33 MiB -> 20 MiB (meshes 16.2 -> 3.5,
+textures 16.5 unchanged: the converter's 256 cap and 4-bit palettes; the console holds only what it draws). Not run in PCSX2 yet
+(see below). The renderer still expands the head's meshes to 17 floats a vertex (68 B) in RAM; a compact in-RAM layout is next.
+
+PCSX2 on the GPU session (`:0`): PCSX2 segfaults while opening its render window there (in every renderer and with or without
+`-nogui`), almost certainly in its XRandR refresh-rate probe, because that Xorg has no connected output (`xrandr` lists only
+disconnected ports). It needs an output (a dummy plug, or an Xorg `ConnectedMonitor` option) to work there.

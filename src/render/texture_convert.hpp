@@ -15,6 +15,10 @@ struct ConvertOptions {
     bool dither = false;
     bool mips = true;
     bool palettes = true;  // false: always 32-bit (for pictures that change, like light maps)
+    // Baked scenes only: the share of each mesh's triangles kept (1: all) and how far reducing may move a surface, as a share of
+    // the primitive's size (see content/mesh_decimate.hpp).
+    double meshKeep = 1;
+    double meshError = 0.1;
 };
 
 struct ConvertedTexture {

@@ -8,11 +8,14 @@
 
 #include <gsKit.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <vector>
 
 namespace ts2::render {
+
+struct GsTexture;
 
 class GsRenderer final : public RendererState, private ResourceQuery {
 public:
@@ -40,9 +43,17 @@ public:
     void setLightMapFade(float) override {}
     void setSkybox(const std::vector<scene::Image>&) override {}
 
+    // Where a scene's images come from when `Image::console` is empty (see readBakedHead): called with the image when a draw first needs
+    // it. At most `textureBudget` bytes of textures are kept in memory; the least recently drawn are let go, and read again if drawn.
+    using ImageSource = std::function<std::vector<std::uint8_t>(const scene::Image&)>;
+    void setImageSource(ImageSource source, std::size_t textureBudget) {
+        imageSource_ = std::move(source);
+        textureBudget_ = textureBudget;
+    }
+
     // What the last frame did, for a test program to print.
     struct FrameStats {
-        std::size_t draws = 0, triangles = 0, drawn = 0, culled = 0, clipped = 0, uploads = 0;
+        std::size_t draws = 0, triangles = 0, drawn = 0, culled = 0, clipped = 0, uploads = 0, textureBytes = 0;
     };
     [[nodiscard]] const FrameStats& lastFrame() const { return frame_; }
 
@@ -59,7 +70,12 @@ private:
     [[nodiscard]] bool skinReady(std::uint32_t) const override { return false; }
 
     void drawList(const FrameView& f, const std::vector<Draw>& list, int blend);
+    // The texture of scene image `index`, read and made when it is first drawn; null when there is none.
+    GsTexture* textureFor(int index);
 
+    ImageSource imageSource_;
+    std::size_t textureBudget_ = 6 * 1024 * 1024;
+    std::size_t frameNumber_ = 0;
     GSGLOBAL* gs_;
     std::unique_ptr<Gpu> gpu_;
     std::vector<std::uint8_t> litColors_;

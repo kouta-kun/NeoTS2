@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -31,22 +32,29 @@ int main(int argc, char** argv) {
         std::printf("gs_lotview: cannot open %s\n", path);
         SleepThread();
     }
-    std::fseek(file, 0, SEEK_END);
-    const long size = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-    if (std::fread(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
-        std::printf("gs_lotview: short read\n");
-        SleepThread();
-    }
-    std::fclose(file);
-    std::printf("gs_lotview: read %ld bytes\n", size);
-
     try {
-        ts2::scene::Scene scene = ts2::render::readBakedScene(bytes);
-        bytes = {};
-        std::printf("gs_lotview: scene has %zu images, %zu meshes, %zu instances\n", scene.images.size(), scene.meshes.size(), scene.instances.size());
+        std::vector<std::uint8_t> head(ts2::render::kBakedPreambleSize);
+        if (std::fread(head.data(), 1, head.size(), file) != head.size()) {
+            throw std::runtime_error("short read of the preamble");
+        }
+        head.resize(ts2::render::bakedHeadSize(head));
+        if (std::fread(head.data() + ts2::render::kBakedPreambleSize, 1, head.size() - ts2::render::kBakedPreambleSize, file) !=
+            head.size() - ts2::render::kBakedPreambleSize) {
+            throw std::runtime_error("short read of the head");
+        }
+        ts2::scene::Scene scene = ts2::render::readBakedHead(head);
+        head = {};
+        std::printf("gs_lotview: head read: %zu images, %zu meshes, %zu instances\n", scene.images.size(), scene.meshes.size(), scene.instances.size());
         ts2::render::GsRenderer renderer(gs);
+        renderer.setImageSource(
+            [file](const ts2::scene::Image& image) {
+                std::vector<std::uint8_t> blob(image.consoleSize);
+                if (std::fseek(file, static_cast<long>(image.consoleOffset), SEEK_SET) != 0 || std::fread(blob.data(), 1, blob.size(), file) != blob.size()) {
+                    return std::vector<std::uint8_t>{};
+                }
+                return blob;
+            },
+            6 * 1024 * 1024);
         renderer.upload(renderer.prepare(scene));
         std::printf("gs_lotview: uploaded\n");
         ts2::render::Camera camera;
@@ -54,17 +62,14 @@ int main(int argc, char** argv) {
         camera.target = {cx, cy, 0};
         camera.eye = {cx + scene.lotSize[0] * 0.9f, cy - scene.lotSize[1] * 0.9f, scene.lotSize[0] * 0.8f};
         camera.farPlane = 400;
-        for (int frame = 0; frame < 300; ++frame) {
-            if (frame < 3) {
-                std::printf("gs_lotview: drawing frame %d\n", frame);
-            }
+        for (int frame = 0; frame < 600; ++frame) {
             if (!renderer.draw(camera)) {
                 break;
             }
-            if (frame < 3) {
+            if (frame < 3 || frame % 100 == 0) {
                 const auto& s = renderer.lastFrame();
-                std::printf("gs_lotview: frame %d: %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped\n", frame, s.draws, s.triangles, s.drawn, s.culled,
-                            s.clipped);
+                std::printf("gs_lotview: frame %d: %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped, %zu textures read, %zu KiB resident\n", frame,
+                            s.draws, s.triangles, s.drawn, s.culled, s.clipped, s.uploads, s.textureBytes / 1024);
             }
         }
     } catch (const std::exception& e) {

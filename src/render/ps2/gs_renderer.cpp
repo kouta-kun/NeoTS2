@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <malloc.h>
+#include <span>
 
 namespace ts2::render {
 
@@ -121,7 +122,11 @@ struct GsTexture {
 struct GsRenderer::Gpu {
     std::vector<GpuMesh> meshes;
     MeshData data;
-    std::vector<std::unique_ptr<GsTexture>> textures;  // by the scene's image index, null for none
+    std::vector<std::unique_ptr<GsTexture>> textures;  // by the scene's image index, null for none (or not read yet)
+    std::vector<scene::Image> sources;                 // where each image is, for reading it when it is first drawn
+    std::vector<std::size_t> lastUsed;                 // per image: the frame it was last drawn in
+    std::vector<std::size_t> bytes;                    // per image: what its texture holds in memory
+    std::size_t resident = 0;
     std::map<int, scene::Image> lightImages;           // the light maps, as pixels (they are read at the vertices)
     GsTexture* freeable = nullptr;
 };
@@ -145,8 +150,8 @@ namespace {
 
 // A texture from a baked image: its largest level, with alpha in the GS's range (0x80 is opaque) and an 8-bit palette
 // in the order the GS reads it (entries 8-15 and 16-23 of each 32 swapped).
-std::unique_ptr<GsTexture> makeTexture(const scene::Image& image) {
-    const content::ConsoleTextureView view = content::ConsoleTextureView::of(image.console);
+std::unique_ptr<GsTexture> makeTexture(std::span<const std::uint8_t> blob) {
+    const content::ConsoleTextureView view = content::ConsoleTextureView::of(blob);
     auto t = std::make_unique<GsTexture>();
     const std::size_t texelBytes = content::ConsoleTexture::texelBytes(view.width, view.height, view.bits, 1);
     t->texels = static_cast<std::uint8_t*>(memalign(64, (texelBytes + 63) / 64 * 64));
@@ -239,7 +244,50 @@ const std::vector<GpuMesh>& GsRenderer::meshes() const {
 }
 
 bool GsRenderer::hasImage(int index) const {
-    return gpu_ && index >= 0 && static_cast<std::size_t>(index) < gpu_->textures.size() && gpu_->textures[static_cast<std::size_t>(index)] != nullptr;
+    if (!gpu_ || index < 0 || static_cast<std::size_t>(index) >= gpu_->textures.size()) {
+        return false;
+    }
+    const auto i = static_cast<std::size_t>(index);
+    return gpu_->textures[i] != nullptr || (imageSource_ && gpu_->sources[i].consoleSize > 0);
+}
+
+// The texture of image `index`: read from the image source the first time it is drawn, after letting go of textures that have not been
+// drawn for a while if the ones in memory would pass the budget. A texture drawn this frame or the last is never let go (its draws
+// may still be waiting for the GS, which reads the space it holds).
+GsTexture* GsRenderer::textureFor(int index) {
+    if (!hasImage(index)) {
+        return nullptr;
+    }
+    Gpu& g = *gpu_;
+    const auto i = static_cast<std::size_t>(index);
+    g.lastUsed[i] = frameNumber_;
+    if (g.textures[i]) {
+        return g.textures[i].get();
+    }
+    const std::vector<std::uint8_t> blob = imageSource_(g.sources[i]);
+    if (blob.empty()) {
+        return nullptr;
+    }
+    while (g.resident + blob.size() > textureBudget_) {
+        std::size_t victim = g.textures.size();
+        for (std::size_t k = 0; k < g.textures.size(); ++k) {
+            if (g.textures[k] && g.lastUsed[k] + 1 < frameNumber_ && (victim == g.textures.size() || g.lastUsed[k] < g.lastUsed[victim])) {
+                victim = k;
+            }
+        }
+        if (victim == g.textures.size()) {
+            break;  // everything in memory was drawn lately: go over the budget rather than disturb a draw in flight
+        }
+        gsKit_TexManager_free(gs_, &g.textures[victim]->tex);
+        g.resident -= g.bytes[victim];
+        g.bytes[victim] = 0;
+        g.textures[victim].reset();
+    }
+    g.textures[i] = makeTexture(blob);
+    g.bytes[i] = blob.size();
+    g.resident += blob.size();
+    ++frame_.uploads;
+    return g.textures[i].get();
 }
 
 IRenderer::Prepared GsRenderer::prepare(const scene::Scene& scene) const {
@@ -253,9 +301,20 @@ IRenderer::Prepared GsRenderer::prepare(const scene::Scene& scene) const {
         g.meshes.push_back(packMesh(mesh, scene.materials.size(), 0, g.data));
     }
     g.textures.resize(scene.images.size());
+    g.lastUsed.assign(scene.images.size(), 0);
+    g.bytes.assign(scene.images.size(), 0);
+    g.sources.reserve(scene.images.size());
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
+        scene::Image info;  // the place of the image without its pixels
+        info.width = scene.images[i].width;
+        info.height = scene.images[i].height;
+        info.consoleOffset = scene.images[i].consoleOffset;
+        info.consoleSize = scene.images[i].consoleSize;
+        g.sources.push_back(std::move(info));
         if (!scene.images[i].console.empty()) {
-            g.textures[i] = makeTexture(scene.images[i]);
+            g.textures[i] = makeTexture(scene.images[i].console);
+            g.bytes[i] = scene.images[i].console.size();
+            g.resident += g.bytes[i];
         }
     }
     for (const scene::Instance& instance : scene.instances) {
@@ -332,8 +391,8 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
 
         // The texture, and the state it and the material ask for.
         GsTexture* texture = nullptr;
-        if (u.samplers[0].texture.kind == TextureRef::Kind::Image && hasImage(u.samplers[0].texture.index)) {
-            texture = gpu_->textures[static_cast<std::size_t>(u.samplers[0].texture.index)].get();
+        if (u.samplers[0].texture.kind == TextureRef::Kind::Image) {
+            texture = textureFor(u.samplers[0].texture.index);
         }
         const bool additive = blend && m && m->alpha == scene::AlphaMode::Add;
         const bool blended = blend != 0;
@@ -437,6 +496,7 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
 
 bool GsRenderer::draw(const Camera& camera) {
     frame_ = {};
+    ++frameNumber_;
     const FrameView f = FrameView::make(camera, gs_->Width, gs_->Height);
     gsKit_clear(gs_, GS_SETREG_RGBAQ(static_cast<int>(clear_[0] * 255), static_cast<int>(clear_[1] * 255), static_cast<int>(clear_[2] * 255), 0x80, 0));
     if (drawScene_ && gpu_) {
@@ -446,6 +506,7 @@ bool GsRenderer::draw(const Camera& camera) {
         drawList(f, layers, 1);
         drawList(f, blended, 1);
     }
+    frame_.textureBytes = gpu_ ? gpu_->resident : 0;
     gsKit_queue_exec(gs_);
     gsKit_sync_flip(gs_);
     gsKit_TexManager_nextFrame(gs_);
