@@ -3,6 +3,7 @@
 // the game has them for now; converting them is the next step.
 #include "content/bank.hpp"
 #include "content/console_texture.hpp"
+#include "content/mesh_decimate.hpp"
 #include "formats/scenegraph.hpp"
 #include "render/texture_fit.hpp"
 #include "content/lot.hpp"
@@ -41,6 +42,100 @@ struct TextureOptions {
     bool dither = false;
     std::string sheetDir;  // when set: pairs of raw RGBA files (original, converted) of the textures worth looking at, and a manifest
 };
+
+constexpr std::uint32_t kGmdc = 0xAC4F8687;
+
+struct MeshOptions {
+    double maxError = 0.01;  // of a group's size: how far reducing may move its surface
+    double keep = 0;  // 0: meshes are left alone; 1: only written back, to check the writer
+    std::string dumpDir;  // OBJ files of the meshes that were reduced, before and after, for looking at
+};
+
+bool sameMesh(const ts2::scenegraph::Mesh& a, const ts2::scenegraph::Mesh& b) {
+    const auto elementsEqual = [](const ts2::scenegraph::Element& x, const ts2::scenegraph::Element& y) {
+        return x.identity == y.identity && x.blockFormat == y.blockFormat && x.setFormat == y.setFormat && x.count == y.count && x.data == y.data;
+    };
+    if (a.name != b.name || a.elements.size() != b.elements.size() || a.links.size() != b.links.size() || a.groups.size() != b.groups.size() ||
+        a.inverseBinds.size() != b.inverseBinds.size() || a.container.links.size() != b.container.links.size() ||
+        a.container.blockTypes != b.container.blockTypes) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.elements.size(); ++i) {
+        if (!elementsEqual(a.elements[i], b.elements[i])) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.links.size(); ++i) {
+        if (a.links[i].elements != b.links[i].elements || a.links[i].vertexCount != b.links[i].vertexCount || a.links[i].aliases != b.links[i].aliases) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.groups.size(); ++i) {
+        const auto &x = a.groups[i], &y = b.groups[i];
+        if (x.primitive != y.primitive || x.link != y.link || x.name != y.name || x.indices != y.indices || x.opacity != y.opacity || x.bones != y.bones) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void writeObj(const std::string& path, const ts2::scenegraph::Mesh& mesh) {
+    std::ofstream out(path);
+    std::size_t base = 1;
+    for (const auto& group : mesh.groups) {
+        if (group.primitive != ts2::scenegraph::kTriangleList || group.link >= mesh.links.size()) {
+            continue;
+        }
+        const auto positions = ts2::scenegraph::vertexFloats(mesh, mesh.links[group.link], ts2::scenegraph::kPositions);
+        for (std::size_t v = 0; v + 2 < positions.size(); v += 3) {
+            out << "v " << positions[v] << ' ' << positions[v + 1] << ' ' << positions[v + 2] << '\n';
+        }
+        for (std::size_t i = 0; i + 2 < group.indices.size(); i += 3) {
+            out << "f " << base + group.indices[i] << ' ' << base + group.indices[i + 1] << ' ' << base + group.indices[i + 2] << '\n';
+        }
+        base += positions.size() / 3;
+    }
+}
+
+struct MeshStats {
+    std::size_t count = 0, failed = 0, mismatched = 0;
+    std::size_t bytesBefore = 0, bytesAfter = 0;
+    ts2::content::DecimateStats decimate;
+};
+
+void convertMeshes(std::map<Key, ts2::content::BankResource>& gathered, const MeshOptions& options, MeshStats& stats) {
+    std::size_t dumped = 0;
+    for (auto& [key, resource] : gathered) {
+        if (key.type != kGmdc) {
+            continue;
+        }
+        ++stats.count;
+        try {
+            const auto mesh = ts2::scenegraph::parseMesh(resource.bytes);
+            stats.bytesBefore += resource.bytes.size();
+            ts2::content::DecimateStats before = stats.decimate;
+            const auto reduced = options.keep < 1 ? ts2::content::decimate(mesh, options.keep, options.maxError, stats.decimate) : mesh;
+            const auto bytes = ts2::scenegraph::writeMesh(reduced);
+            if (!sameMesh(ts2::scenegraph::parseMesh(bytes), reduced)) {
+                ++stats.mismatched;
+            }
+            if (!options.dumpDir.empty() && stats.decimate.groupsReduced > before.groupsReduced && stats.count % 9 == 0) {
+                const std::string base = options.dumpDir + "/" + std::to_string(stats.count);
+                writeObj(base + "_orig.obj", mesh);
+                writeObj(base + "_dec.obj", reduced);
+                std::ofstream(options.dumpDir + "/manifest.tsv", std::ios::app)
+                    << stats.count << '\t' << mesh.name << '\t' << (stats.decimate.trianglesBefore - before.trianglesBefore) << '\t'
+                    << (stats.decimate.trianglesAfter - before.trianglesAfter) << '\n';
+                ++dumped;
+            }
+            resource.bytes = bytes;
+            stats.bytesAfter += bytes.size();
+        } catch (const std::exception& e) {
+            ++stats.failed;
+            std::fprintf(stderr, "mesh failed: %s\n", e.what());
+        }
+    }
+}
 
 struct TextureStats {
     std::size_t count = 0, dropped = 0, failed = 0;
@@ -231,6 +326,7 @@ std::uint32_t sourceOf(const std::string& name) {
 
 int main(int argc, char** argv) {
     TextureOptions textures;
+    MeshOptions meshes;
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -242,6 +338,12 @@ int main(int argc, char** argv) {
             textures.paletteError = std::stod(argv[++i]);
         } else if (a == "--sheet-dir" && i + 1 < argc) {
             textures.sheetDir = argv[++i];
+        } else if (a == "--mesh-keep" && i + 1 < argc) {
+            meshes.keep = std::stod(argv[++i]);
+        } else if (a == "--mesh-error" && i + 1 < argc) {
+            meshes.maxError = std::stod(argv[++i]);
+        } else if (a == "--mesh-dump" && i + 1 < argc) {
+            meshes.dumpDir = argv[++i];
         } else if (a == "--dither") {
             textures.dither = true;
         } else {
@@ -249,7 +351,7 @@ int main(int argc, char** argv) {
         }
     }
     if (args.size() < 3) {
-        std::fprintf(stderr, "Usage: ts2bank <install-folder> <out.bank> <lot.package>... [--textures [--max-side N] [--palette-error E] [--dither]]\n");
+        std::fprintf(stderr, "Usage: ts2bank <install-folder> <out.bank> <lot.package>... [--textures [--max-side N] [--palette-error E] [--dither]] [--mesh-keep K [--mesh-error F] [--mesh-dump DIR]]\n");
         return 1;
     }
     try {
@@ -284,6 +386,17 @@ int main(int argc, char** argv) {
                         static_cast<double>(stats.bytesAfter) / 1048576.0, stats.lifoDropped, static_cast<double>(stats.lifoBytes) / 1048576.0);
         }
 
+        if (meshes.keep > 0) {
+            MeshStats stats;
+            convertMeshes(gathered, meshes, stats);
+            std::printf("\nmeshes: %zu, %zu failed, %zu did not read back the same; %.1f MiB -> %.1f MiB\n", stats.count, stats.failed, stats.mismatched,
+                        double(stats.bytesBefore) / 1048576.0, double(stats.bytesAfter) / 1048576.0);
+            const auto& d = stats.decimate;
+            std::printf("  left alone (groups/triangles): skinned %zu/%zu, small %zu/%zu, data not carried %zu/%zu, nothing could collapse %zu/%zu\n",
+                        d.skippedSkinned, d.trianglesSkinned, d.skippedSmall, d.trianglesSmall, d.skippedData, d.trianglesData, d.skippedStuck, d.trianglesStuck);
+            std::printf("  triangle-list groups %zu: %zu reduced, %zu left alone; triangles %zu -> %zu (%.0f%%)\n", d.groups, d.groupsReduced, d.groupsSkipped,
+                        d.trianglesBefore, d.trianglesAfter, d.trianglesBefore ? 100.0 * double(d.trianglesAfter) / double(d.trianglesBefore) : 0.0);
+        }
         std::map<std::uint32_t, std::pair<std::size_t, std::size_t>> byType;
         std::size_t total = 0;
         std::vector<ts2::content::BankResource> resources;

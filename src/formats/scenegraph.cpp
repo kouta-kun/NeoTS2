@@ -386,6 +386,109 @@ Mesh parseMesh(std::span<const std::uint8_t> data) {
     return m;
 }
 
+namespace {
+
+class Writer {
+public:
+    void u8(std::uint8_t v) { out_.push_back(v); }
+    void u16(std::uint16_t v) { u8(static_cast<std::uint8_t>(v)); u8(static_cast<std::uint8_t>(v >> 8)); }
+    void u32(std::uint32_t v) { u16(static_cast<std::uint16_t>(v)); u16(static_cast<std::uint16_t>(v >> 16)); }
+    void f32(float v) { u32(std::bit_cast<std::uint32_t>(v)); }
+    void bytes(const std::vector<std::uint8_t>& b) { out_.insert(out_.end(), b.begin(), b.end()); }
+    void varString(const std::string& s) {
+        std::size_t length = s.size();
+        do {
+            std::uint8_t byte = length & 0x7F;
+            length >>= 7;
+            u8(length != 0 ? static_cast<std::uint8_t>(byte | 0x80) : byte);
+        } while (length != 0);
+        out_.insert(out_.end(), s.begin(), s.end());
+    }
+    void indexList(const std::vector<std::uint16_t>& list) {
+        u32(static_cast<std::uint32_t>(list.size()));
+        for (const auto i : list) {
+            u16(i);
+        }
+    }
+    void blockHeader(const std::string& name, std::uint32_t id, std::uint32_t version) {
+        varString(name);
+        u32(id);
+        u32(version);
+    }
+    std::vector<std::uint8_t> take() { return std::move(out_); }
+
+private:
+    std::vector<std::uint8_t> out_;
+};
+
+} // namespace
+
+std::vector<std::uint8_t> writeMesh(const Mesh& m) {
+    Writer w;
+    bool withHigh = false;
+    for (const Link& l : m.container.links) {
+        withHigh = withHigh || l.instanceHigh != 0;
+    }
+    if (withHigh) {
+        w.u32(0xFFFF0001);
+    }
+    w.u32(static_cast<std::uint32_t>(m.container.links.size()));
+    for (const Link& l : m.container.links) {
+        w.u32(l.group);
+        w.u32(l.instance);
+        if (withHigh) {
+            w.u32(l.instanceHigh);
+        }
+        w.u32(l.type);
+    }
+    w.u32(static_cast<std::uint32_t>(m.container.blockTypes.size()));
+    for (const auto t : m.container.blockTypes) {
+        w.u32(t);
+    }
+    w.blockHeader("cGeometryDataContainer", 0xAC4F8687, 4);
+    w.blockHeader("cSGResource", 0, 2);
+    w.varString(m.name);
+    w.u32(static_cast<std::uint32_t>(m.elements.size()));
+    for (const Element& e : m.elements) {
+        w.u32(e.count);
+        w.u32(e.identity);
+        w.u32(0);
+        w.u32(e.blockFormat);
+        w.u32(e.setFormat);
+        w.u32(static_cast<std::uint32_t>(e.data.size()));
+        w.bytes(e.data);
+        w.indexList({});
+    }
+    w.u32(static_cast<std::uint32_t>(m.links.size()));
+    for (const ElementLink& l : m.links) {
+        w.indexList(l.elements);
+        w.u32(l.vertexCount);
+        w.u32(static_cast<std::uint32_t>(l.elements.size()));
+        for (const auto& alias : l.aliases) {
+            w.indexList(alias);
+        }
+    }
+    w.u32(static_cast<std::uint32_t>(m.groups.size()));
+    for (const Group& g : m.groups) {
+        w.u32(g.primitive);
+        w.u32(g.link);
+        w.varString(g.name);
+        w.indexList(g.indices);
+        w.u32(g.opacity);
+        w.indexList(g.bones);
+    }
+    w.u32(static_cast<std::uint32_t>(m.inverseBinds.size()));
+    for (const auto& b : m.inverseBinds) {
+        for (const float v : b.rotation) {
+            w.f32(v);
+        }
+        for (const float v : b.translation) {
+            w.f32(v);
+        }
+    }
+    return w.take();
+}
+
 std::vector<float> floats(const Element& element) {
     const std::size_t perItem = element.blockFormat == 0 ? 1 : element.blockFormat == 1 ? 2
                               : element.blockFormat == 2 ? 3 : 0;

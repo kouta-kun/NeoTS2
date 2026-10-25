@@ -86,6 +86,9 @@ struct Mesh {
     const Element* find(const ElementLink& link, std::uint32_t identity) const;
 };
 Mesh parseMesh(std::span<const std::uint8_t> data);
+// The mesh as a GMDC (version 4) that parseMesh reads back to the same meshes, with what it doesn't read (blend group names,
+// bounding meshes) left out. For converters; the game's own files are never written.
+std::vector<std::uint8_t> writeMesh(const Mesh& mesh);
 
 // Floats of an element (one, two or three per item).
 std::vector<float> floats(const Element& element);

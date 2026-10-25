@@ -198,6 +198,7 @@ add_library(ts2content
     src/content/animation_lists.cpp
     src/content/bank.cpp
     src/content/console_texture.cpp
+    src/content/mesh_decimate.cpp
     src/content/install.cpp
     src/content/save_folder.cpp
     src/content/thumbnail_merge.cpp

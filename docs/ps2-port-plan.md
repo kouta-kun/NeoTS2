@@ -403,3 +403,16 @@ pixel edits.
 were looked at: the palettised ones look right in the sample; the worst 4-bit ones (error 7-8) show some banding on soft
 gradients (a green panel, a bench's shading), which 8-bit or dithering would fix at some cost. The owner judged them good enough;
 the thresholds can be revisited (`--palette-error`, `--dither`). The mip levels themselves have not been looked at.
+
+**Mesh conversion** (`ts2bank --mesh-keep K [--mesh-error F] [--mesh-dump DIR]`; `src/content/mesh_decimate.*`, `writeMesh` in
+`src/formats/scenegraph.*`): every GMDC is parsed, its triangle-list groups reduced by edge collapses (quadric error; the
+surviving vertex keeps its own attributes, including blend weights, so skinned groups are reduced too; vertices at one place on a
+texture seam collapse together; open edges are penalised; each connected part keeps at least 0.75 x K of its triangles; an
+error cap stops collapses that would move the surface more than F of the group's size) and written back as a GMDC that the
+existing parser reads (`writeMesh`; all 1,097 meshes round-trip). Groups under 24 triangles are left alone; morph elements the
+engine does not read are dropped where they can't follow the vertices. Writing only what the parser reads halves the mesh
+resources (96.8 -> 46.4 MiB) before any reduction.
+
+All-lots base bank, unique meshes (844k triangles, once each): `--mesh-keep 0.2 --mesh-error 0.1` leaves **42%** (58% removed),
+37-42 MiB of meshes. The owner accepted that setting for now (contact sheets of before/after for a sample were looked at; thin parts
+survive, soft curves get faceted). A stricter cap keeps more: 0.003 leaves 75%, 0.01 63%, 0.03 56%, no cap 45%.
