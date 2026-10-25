@@ -338,6 +338,11 @@ add_library(ts2scene
     src/scene/view.cpp
 )
 target_link_libraries(ts2scene PUBLIC ts2content PRIVATE project_warnings)
+# The PlayStation 2 toolchain's GCC 15 crashes on this file at every optimisation level but -O3 ("maximum number of
+# generated reload insns per insn achieved", in std::__adjust_heap on a small struct), so it keeps -O3 there.
+if(PS2)
+    set_source_files_properties(src/scene/rig_layers.cpp PROPERTIES COMPILE_OPTIONS "-O3")
+endif()
 
 # What every renderer shares, apart from any graphics API: the CPU side of a scene, culling and
 # draw order, and the numbers each draw's shaders are given.
@@ -422,6 +427,10 @@ else()
     add_executable(ts2index tools/ts2index/main.cpp)
     target_link_libraries(ts2index PRIVATE ts2content project_warnings)
 
+    # Builds a lot's scene without a window and reports its memory and time (see the PlayStation 2 plan).
+    add_executable(lotscene tools/lotscene/main.cpp app/lot_light.cpp)
+    target_link_libraries(lotscene PRIVATE ts2sim ts2scene project_warnings)
+
     add_executable(simrun tools/simrun/main.cpp app/route_sources.cpp)
     target_link_libraries(simrun PRIVATE ts2sim ts2scene project_warnings)
 
@@ -456,6 +465,12 @@ else()
 
     add_executable(fuzzseeds tools/fuzzseeds/main.cpp)
     target_link_libraries(fuzzseeds PRIVATE ts2formats project_warnings)
+
+    # The tools and tests above, without the window, graphics or game app below: for a machine with no display or GPU.
+    option(NEOTS2_HEADLESS "Build only the libraries, tools and tests" OFF)
+    if(NEOTS2_HEADLESS)
+        return()
+    endif()
 
     # The renderer and the game app need a window, the keyboard and mouse and an OpenGL context from
     # SDL 3 (set SDL3_DIR to its cmake folder), or from SDL 1.2 where there is no SDL 3 (Mac OS X 10.4 and

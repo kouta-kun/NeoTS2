@@ -101,7 +101,7 @@ void restoreOverlays(const content::Lot& lot, std::uint32_t id, SimObject& objec
         const double played = a.startedMsAgo;
         o.startMs = nowMs - played;
         o.lengthMs = a.lengthMs && !std::isnan(*a.lengthMs) ? std::max(*a.lengthMs, 0.0f) : 0.0f;
-        o.plays = static_cast<std::int16_t>(std::clamp(a.plays, -1, 0x7FFF));
+        o.plays = static_cast<std::int16_t>(std::clamp<std::int32_t>(a.plays, -1, 0x7FFF));
         o.weight = a.weight >= 0 && a.weight <= 1 ? a.weight : 1.0f;
         o.priority = static_cast<std::uint8_t>(layer - kPriorityLayers.begin());
         // The saved kind lets Animate Stop by kind stop it, so a saved idle stops when the Sim walks.

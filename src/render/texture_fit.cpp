@@ -121,9 +121,9 @@ scene::Image padded(const scene::Image& image, unsigned width, unsigned height) 
         return out;
     }
     for (unsigned y = 0; y < height; ++y) {
-        const unsigned sy = std::min(y, image.height - 1);
+        const unsigned sy = std::min<std::uint32_t>(y, image.height - 1);
         for (unsigned x = 0; x < width; ++x) {
-            const unsigned sx = std::min(x, image.width - 1);
+            const unsigned sx = std::min<std::uint32_t>(x, image.width - 1);
             std::copy_n(&image.rgba[(std::size_t{sy} * image.width + sx) * 4], 4, &out.rgba[(std::size_t{y} * width + x) * 4]);
         }
     }

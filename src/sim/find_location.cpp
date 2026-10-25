@@ -124,8 +124,8 @@ std::optional<FoundLocation> findLocation(const World& world, const SimObject& p
     if (width < 3 || height < 3) {
         return std::nullopt;
     }
-    std::int32_t startX = std::clamp(search.startX >> 16, 1, width - 2);
-    std::int32_t startY = std::clamp(search.startY >> 16, 1, height - 2);
+    std::int32_t startX = std::clamp<std::int32_t>(search.startX >> 16, 1, width - 2);
+    std::int32_t startY = std::clamp<std::int32_t>(search.startY >> 16, 1, height - 2);
     const auto roomOf = [&](std::int32_t x, std::int32_t y) {
         return rooms.roomAtPosition(search.level - 1, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
     };
@@ -171,8 +171,8 @@ std::optional<FoundLocation> findLocation(const World& world, const SimObject& p
         // the tile in front of it: the walk starts again there.
         if (search.startDirection >= 0 && at.along == 0 && at.across == 0 && directionTo(search, x, y) != first) {
             static constexpr Offset kFront[8] = {{-1, 0}, {-1, 1}, {0, 1}, {1, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, -1}};
-            const std::int32_t frontX = std::clamp((search.startX >> 16) + kFront[first].across, 1, width - 2);
-            const std::int32_t frontY = std::clamp((search.startY >> 16) + kFront[first].along, 1, height - 2);
+            const std::int32_t frontX = std::clamp<std::int32_t>((search.startX >> 16) + kFront[first].across, 1, width - 2);
+            const std::int32_t frontY = std::clamp<std::int32_t>((search.startY >> 16) + kFront[first].along, 1, height - 2);
             if (frontX != startX || frontY != startY) {
                 startX = frontX;
                 startY = frontY;

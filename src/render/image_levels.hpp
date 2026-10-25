@@ -14,8 +14,8 @@ namespace ts2::render {
 inline bool ownLevels(const scene::Image& image) {
     std::uint32_t w = image.width, h = image.height;
     for (const auto& level : image.smallerLevels) {
-        w = std::max(1u, w / 2);
-        h = std::max(1u, h / 2);
+        w = std::max<std::uint32_t>(1, w / 2);
+        h = std::max<std::uint32_t>(1, h / 2);
         if (level.size() != static_cast<std::size_t>(w) * h * 4) {
             return false;
         }

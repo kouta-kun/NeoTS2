@@ -246,7 +246,7 @@ RouteWorld::RouteWorld(const content::Lot& lot, const FenceBlocks& fenceBlocks, 
     const int width = static_cast<int>(floors->second.height), height = static_cast<int>(floors->second.width);
     // Routing covers the ground storey and up. The level below the ground is not routed yet.
     // A broken save's level count is held to the levels the floor grid really has.
-    const int lowest = std::clamp(lot.roomGraph->firstLevel, -1, 0);
+    const int lowest = std::clamp<std::int32_t>(lot.roomGraph->firstLevel, -1, 0);
     const std::int64_t graphLevels = std::int64_t{lot.roomGraph->levels} + lowest;
     const std::int64_t gridLevels = std::int64_t{floors->second.levels} + lowest;
     const int levels = static_cast<int>(std::clamp<std::int64_t>(std::min(graphLevels, gridLevels), 0, kMaxRouteLevels));

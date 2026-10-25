@@ -124,6 +124,10 @@ public:
     // Problems met while loading (missing textures, unreadable files), for tools to report.
     std::vector<std::string> warnings;
 
+    // For measuring what a scene costs apart from its pictures (tools/lotscene): textures that are there come back as one
+    // white pixel, whatever their size. Scenes built this way are not meant to be drawn.
+    bool stubPixels = false;
+
 private:
     void readMaterialNames(const std::filesystem::path& path);
     void readCatalog();

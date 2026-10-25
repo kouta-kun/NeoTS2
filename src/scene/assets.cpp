@@ -241,6 +241,9 @@ public:
                 return std::nullopt;
             }
             const std::uint32_t w = width(level), h = height(level);
+            if (assets_.stubPixels) {
+                return Image{1, 1, {255, 255, 255, 255}, {}};
+            }
             return Image{w, h, sg::decodeRgba(data, w, h, image_.format)};
         } catch (const std::exception& ex) {
             assets_.warnings.push_back("texture " + name_ + ": " + ex.what());
@@ -378,7 +381,8 @@ std::vector<Image> Assets::textureFaces(const std::string& name) {
                 warnings.push_back("texture " + name + ": a face without its largest level inline");
                 return {};
             }
-            out.push_back(Image{img.width, img.height, sg::decodeRgba(face.back().data, img.width, img.height, img.format)});
+            out.push_back(stubPixels ? Image{1, 1, {255, 255, 255, 255}, {}}
+                                     : Image{img.width, img.height, sg::decodeRgba(face.back().data, img.width, img.height, img.format)});
         }
     } catch (const std::exception& ex) {
         warnings.push_back("texture " + name + ": " + ex.what());

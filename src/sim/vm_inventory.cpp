@@ -389,7 +389,7 @@ bool Execution::countedTokens(Inventory& inventory, std::uint8_t op, std::uint32
     case 9: {  // the next token of the kind after the 1-based position at the index: its position
                // goes back to the index, its GUID (low, then high) to the value and the slot after it
         const auto start = static_cast<std::int32_t>(read(o[10], word(o, 11), f));
-        for (std::size_t i = static_cast<std::size_t>(std::max(start, 0)); i < tokens.size(); ++i) {
+        for (std::size_t i = static_cast<std::size_t>(std::max<std::int32_t>(start, 0)); i < tokens.size(); ++i) {
             if (property(*tokens[i], 1) == static_cast<std::int16_t>(tokenKind)) {
                 write(o[10], word(o, 11), f, checkedResult(static_cast<std::int32_t>(i) + 1));
                 write(o[13], word(o, 14), f, static_cast<std::int16_t>(tokens[i]->guid & 0xFFFF));
