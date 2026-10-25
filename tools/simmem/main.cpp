@@ -338,6 +338,13 @@ int main(int argc, char** argv) {
         });
         g_checksum = checksum;
 #ifndef __PS2__
+        if (std::getenv("SIMMEM_KEEP") != nullptr) {
+            std::printf("simmem: leaving without freeing (for heaptrack's list of what is live)\n");
+            std::fflush(stdout);
+            std::_Exit(0);
+        }
+#endif
+#ifndef __PS2__
         if (std::getenv("SIMMEM_FINGERPRINTS") != nullptr) {
             for (unsigned k = 0; k < 96 && k * 5 + 5 <= ticks; ++k) {
                 std::printf("fp %u %08x\n", (k + 1) * 5, g_fingerprints[k]);

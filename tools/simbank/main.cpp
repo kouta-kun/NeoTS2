@@ -14,6 +14,7 @@
 #include "../../app/route_sources.hpp"
 #include "formats/dbpf_writer.hpp"
 #include "formats/neighborhood_id.hpp"
+#include "formats/objf.hpp"
 #include "formats/qfs.hpp"
 #include "scene/animation_library.hpp"
 #include "scene/assets.hpp"
@@ -220,8 +221,54 @@ int main(int argc, char** argv) {
                 }
             }
             ts2::sim::BehaviorClosure closure{code};
-            closure.addTypes(guids);
-            closure.run();
+            // The types the trees make by a GUID they hold are added with theirs, until none are new.
+            std::set<std::uint32_t> added;
+            for (int round = 0; round < 8; ++round) {
+                std::set<std::uint32_t> fresh;
+                for (const std::uint32_t guid : guids) {
+                    if (added.insert(guid).second) {
+                        fresh.insert(guid);
+                    }
+                }
+                if (fresh.empty() && round > 0) {
+                    break;
+                }
+                closure.addTypes(fresh);
+                closure.run();
+                for (const std::uint32_t guid : closure.createdGuids) {
+                    if (code.objectType(guid) != nullptr) {
+                        guids.insert(guid);
+                    }
+                }
+            }
+            if (std::getenv("SIMBANK_KEEP_ALL_TYPES") == nullptr) {
+                // Object definitions, functions and slots of the types the lot, the Social objects and what they create need: the other 3,000 are about 2 MiB of
+                // the console's heap once parsed, and nothing here reaches them.
+                std::set<std::pair<std::uint32_t, std::uint32_t>> kept;
+                std::set<std::uint32_t> keptGroups{ts2::sim::kGlobalGroup};  // (the global group's routing slots are every object's)
+                for (const auto& [g, i] : closure.trees) {
+                    keptGroups.insert(g);  // semi-global groups among them
+                }
+                for (const std::uint32_t guid : guids) {
+                    if (const auto* t = code.objectType(guid)) {
+                        kept.emplace(t->group, t->instance);
+                        keptGroups.insert(t->group);
+                    }
+                }
+                std::size_t dropped = 0;
+                for (auto it = gathered.begin(); it != gathered.end();) {
+                    const auto& [type, group, instance, high] = it->first;
+                    const bool definition = type == ts2::types::kObjectDefinition || type == ts2::objf::kType;
+                    const bool slots = type == ts2::types::kSlots;
+                    if ((definition && !kept.contains({group, instance})) || (slots && !keptGroups.contains(group))) {
+                        it = gathered.erase(it);
+                        ++dropped;
+                    } else {
+                        ++it;
+                    }
+                }
+                std::printf("simbank: %zu object types kept, %zu resources of the others left out\n", kept.size(), dropped);
+            }
             std::set<std::uint32_t> groups{ts2::sim::kGlobalGroup};
             for (const auto& [g, i] : closure.trees) {
                 groups.insert(g);

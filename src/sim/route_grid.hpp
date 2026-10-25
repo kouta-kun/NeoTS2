@@ -80,13 +80,16 @@ using RouteIntersects = std::function<std::optional<float>(std::uint32_t owner)>
 class RouteGrid {
 public:
     struct Cell {
-        int level = 0;          // 0 for the root
-        int x = 0, y = 0;       // position in cells of this level's size
+        std::int32_t firstChild = -1;  // the first of its four children, which are stored one after another (-1 for a leaf)
+        std::int16_t x = 0, y = 0;     // position in cells of this level's size
+        std::int8_t level = 0;         // 0 for the root
         float size = 0;
-        std::array<int, 4> children{-1, -1, -1, -1};  // low x/y, high x, high y, high x and y
         std::vector<int> items;
 
-        bool isLeaf() const { return children[0] < 0; }
+        bool isLeaf() const { return firstChild < 0; }
+        // Its children: low x/y, high x, high y, high x and y (-1 each for a leaf).
+        int child(int i) const { return firstChild < 0 ? -1 : firstChild + i; }
+        std::array<int, 4> children() const { return {child(0), child(1), child(2), child(3)}; }
         RouteRect rect() const { return {x * size, y * size, (x + 1) * size, (y + 1) * size}; }
     };
 

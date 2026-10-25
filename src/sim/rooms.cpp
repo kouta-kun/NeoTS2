@@ -80,7 +80,7 @@ RoomMap::RoomMap(const wallgraph::WallGraph& graph) : width_(graph.width), heigh
     const std::size_t count = static_cast<std::size_t>(levelCount_) * width_ * height_ * 4;
     std::vector<std::uint8_t> blocked(count, 0);  // bit q: the side towards neighbour q is closed
     std::unordered_map<std::size_t, std::unordered_map<std::int32_t, int>> votes;
-    quarterRoom_.assign(count, kNoRoom);
+    quarterRoom_.assign(count, 0);
 
     auto inside = [&](std::int32_t x, std::int32_t y) { return x >= 0 && y >= 0 && x < width_ && y < height_; };
     auto vote = [&](std::int32_t level, std::int32_t x, std::int32_t y, int q, std::int32_t room) {
@@ -233,7 +233,7 @@ RoomMap::RoomMap(const wallgraph::WallGraph& graph) : width_(graph.width), heigh
                     info.quarterTiles += static_cast<std::int32_t>(region.size());
                     info.touchesLotEdge = info.touchesLotEdge || edge;
                     for (const std::size_t at : region) {
-                        quarterRoom_[at] = best;
+                        quarterRoom_[at] = paletteIndex(best);
                     }
                 }
             }
@@ -257,14 +257,14 @@ RoomMap::RoomMap(const array3d::Array3D& savedRooms, std::int32_t firstLevel) {
         return;
     }
     firstLevel_ = firstLevel;
-    quarterRoom_.assign(static_cast<std::size_t>(levelCount_) * width_ * height_ * 4, kNoRoom);
+    quarterRoom_.assign(static_cast<std::size_t>(levelCount_) * width_ * height_ * 4, 0);
     for (std::int32_t l = 0; l < levelCount_; ++l) {
         const std::int32_t level = l + firstLevel_;
         for (std::int32_t x = 0; x < width_; ++x) {
             for (std::int32_t y = 0; y < height_; ++y) {
                 for (int q = 0; q < 4; ++q) {
                     const std::int32_t room = savedRooms.i16(l, x, y, static_cast<std::size_t>(3 - q));
-                    quarterRoom_[index(level, x, y, q)] = room;
+                    quarterRoom_[index(level, x, y, q)] = paletteIndex(room);
                     RoomInfo& info = rooms_[room];
                     if (info.quarterTiles == 0) {
                         info.id = room;
@@ -292,7 +292,7 @@ void RoomMap::assignLayer(int layer, const RoomMap& regions) {
                     // Where the layer's walls enclose nothing (e.g. a level without walls) the game
                     // holds region 0, the one outdoors.
                     const std::int32_t region = regions.quarterRoom(level, x, y, q);
-                    ++overlap[quarterRoom_[index(level, x, y, q)]][region == kNoRoom ? 0 : region];
+                    ++overlap[roomOf(index(level, x, y, q))][region == kNoRoom ? 0 : region];
                 }
             }
         }
@@ -307,6 +307,23 @@ void RoomMap::assignLayer(int layer, const RoomMap& regions) {
                                            [](const auto& a, const auto& b) { return a.second < b.second; });
         info.layerRegion[layer] = best->first;
     }
+}
+
+std::uint8_t RoomMap::paletteIndex(std::int32_t room) {
+    if (room == kNoRoom) {
+        return 0;
+    }
+    for (std::size_t i = 1; i < roomIds_.size(); ++i) {
+        if (roomIds_[i] == room) {
+            return static_cast<std::uint8_t>(i);
+        }
+    }
+    if (roomIds_.size() >= 255) {
+        diag::warnOnce("rooms: a lot with more than 254 rooms leaves the others without one");
+        return 0;
+    }
+    roomIds_.push_back(room);
+    return static_cast<std::uint8_t>(roomIds_.size() - 1);
 }
 
 std::int32_t RoomMap::roomAt(std::int32_t level, float x, float y) const {
@@ -324,7 +341,7 @@ std::int32_t RoomMap::roomAt(std::int32_t level, float x, float y) const {
     } else if (dy > 0) {
         quarter = kBottom;
     }
-    return quarterRoom_[index(level, tx, ty, quarter)];
+    return roomOf(index(level, tx, ty, quarter));
 }
 
 std::int32_t RoomMap::quarterRoom(std::int32_t level, std::int32_t x, std::int32_t y, int quarter) const {
@@ -332,7 +349,7 @@ std::int32_t RoomMap::quarterRoom(std::int32_t level, std::int32_t x, std::int32
         y < 0 || x >= width_ || y >= height_ || quarter < 0 || quarter > 3) {
         return kNoRoom;
     }
-    return quarterRoom_[index(level, x, y, quarter)];
+    return roomOf(index(level, x, y, quarter));
 }
 
 const RoomInfo* RoomMap::room(std::int32_t id) const {

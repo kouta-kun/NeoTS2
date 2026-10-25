@@ -26,6 +26,7 @@ struct BehaviorClosure {
     std::size_t namedSites = 0, mode3Sites = 0, mode3Reached = 0, missingNames = 0;
     std::set<std::tuple<std::uint32_t, std::uint16_t, std::uint16_t>> mode3Where;
     std::vector<std::pair<std::uint32_t, std::uint16_t>> start;  // owner group, tree: where the walk begins
+    std::set<std::uint32_t> createdGuids;  // the object types Create New Object Instance makes by a GUID written in the tree (not those it takes from temps)
 
     Tree resolve(std::uint16_t id, std::uint32_t owner);
     void visit(std::uint32_t group, std::uint16_t instance, std::uint32_t owner);

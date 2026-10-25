@@ -3,6 +3,8 @@
 #include "../../app/lot_light.hpp"
 #include "content/lot.hpp"
 #include "render/console_scene.hpp"
+#include "formats/resource_types.hpp"
+#include "scene/view.hpp"
 #include "scene/assets.hpp"
 #include "scene/builder.hpp"
 #include "scene/lot_scene.hpp"
@@ -49,6 +51,74 @@ int main(int argc, char** argv) {
         const std::string state = app::savedLightingState(assets.lighting(), lot);
         const auto light = app::lightLot(assets, builder.scene(), lot, args[1], state);
         (void)light;
+        {
+            ts2::scene::Scene& editable = builder.scene();
+            // The floor's height under every tile of every storey, for a console that has no lot terrain to ask (Scene::floorGrid).
+            const int ground = ts2::scene::groundLevel(editable), top = ts2::scene::topLevel(editable);
+            const int storeys = top - ground + 1;
+            const int width = static_cast<int>(std::lround(editable.lotSize[0])), height = static_cast<int>(std::lround(editable.lotSize[1]));
+            if (editable.floorHeight && storeys > 0 && width > 0 && height > 0) {
+                editable.floorGridStoreys = storeys;
+                editable.floorGrid.reserve(static_cast<std::size_t>(storeys) * static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+                for (int storey = 1; storey <= storeys; ++storey) {
+                    for (int y = 0; y < height; ++y) {
+                        for (int x = 0; x < width; ++x) {
+                            editable.floorGrid.push_back(editable.floorHeight(storey, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f));
+                        }
+                    }
+                }
+            }
+            // A marker for every Sim of the lot, where the console draws it until it has the Sims' own models: a post as tall as a Sim, an instance
+            // for each, filed under the Sim's object id.
+            const int material = builder.colorMaterial("sim marker", {0.95f, 0.25f, 0.2f});
+            ts2::scene::Mesh marker;
+            marker.name = "sim marker";
+            ts2::scene::Primitive& post = marker.primitives.emplace_back();
+            post.material = material;
+            constexpr float kHalf = 0.15f, kHeight = 0.9f;
+            // Six faces of four vertices: position, normal.
+            const float faces[6][4][3] = {{{-kHalf, -kHalf, 0}, {kHalf, -kHalf, 0}, {kHalf, kHalf, 0}, {-kHalf, kHalf, 0}},
+                                          {{-kHalf, -kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, -kHalf, kHeight}},
+                                          {{-kHalf, -kHalf, 0}, {-kHalf, -kHalf, kHeight}, {kHalf, -kHalf, kHeight}, {kHalf, -kHalf, 0}},
+                                          {{kHalf, kHalf, 0}, {kHalf, kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {-kHalf, kHalf, 0}},
+                                          {{-kHalf, kHalf, 0}, {-kHalf, kHalf, kHeight}, {-kHalf, -kHalf, kHeight}, {-kHalf, -kHalf, 0}},
+                                          {{kHalf, -kHalf, 0}, {kHalf, -kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, kHalf, 0}}};
+            const float normals[6][3] = {{0, 0, -1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}};
+            for (int f = 0; f < 6; ++f) {
+                const auto first = static_cast<std::uint32_t>(post.positions.size() / 3);
+                for (int v = 0; v < 4; ++v) {
+                    post.positions.insert(post.positions.end(), faces[f][v], faces[f][v] + 3);
+                    post.normals.insert(post.normals.end(), normals[f], normals[f] + 3);
+                    post.uvs.push_back(v == 1 || v == 2 ? 1.0f : 0.0f);
+                    post.uvs.push_back(v >= 2 ? 1.0f : 0.0f);
+                }
+                for (const std::uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) {
+                    post.indices.push_back(first + i);
+                }
+            }
+            const int markerMesh = static_cast<int>(editable.meshes.size());
+            editable.meshes.push_back(std::move(marker));
+            std::size_t markers = 0;
+            for (const auto& object : lot.objects) {
+                if (object.resourceType != ts2::types::kSavedPerson) {
+                    continue;
+                }
+                const auto& header = object.state.header;
+                const float lotX = header.location[1], lotY = header.location[0];  // (a position's x runs along the lot's y)
+                const int storey = std::max(1, static_cast<int>(header.value1));
+                ts2::scene::Instance instance;
+                instance.mesh = markerMesh;
+                instance.name = "sim-marker";
+                instance.object = object.id;
+                instance.part = ts2::scene::Part::Object;
+                instance.level = ground + storey - 1;
+                instance.lightGroup = ts2::scene::LightGroup::Sims;
+                instance.transform = ts2::scene::Transform::at(lotX, lotY, editable.floorHeight ? editable.floorHeight(storey, lotX, lotY) : 0.0f, 0.0f);
+                editable.instances.push_back(std::move(instance));
+                ++markers;
+            }
+            std::printf("floor grid: %d storeys, %zu heights; %zu Sim markers\n", editable.floorGridStoreys, editable.floorGrid.size(), markers);
+        }
         const ts2::scene::Scene& scene = builder.scene();
         std::printf("scene built: %zu images, %zu materials, %zu meshes, %zu instances\n", scene.images.size(), scene.materials.size(),
                     scene.meshes.size(), scene.instances.size());

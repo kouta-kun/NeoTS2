@@ -31,7 +31,9 @@ RouteGrid::RouteGrid(float width, float height) : width_(lotSize(width)), height
         size *= 2;
     }
     finestLevel_ = static_cast<int>(std::lround(std::log2(size / kFinestSize)));
-    cells_.push_back({0, 0, 0, size, {-1, -1, -1, -1}, {}});
+    Cell root;
+    root.size = size;
+    cells_.push_back(std::move(root));
 }
 
 bool RouteGrid::accepts(const RouteItem& item) {
@@ -60,7 +62,7 @@ bool RouteGrid::insert(int item, int cell) {
     if (!cells_[static_cast<std::size_t>(cell)].isLeaf()) {
         bool added = false;
         for (int i = 0; i < 4; ++i) {
-            added |= insert(item, cells_[static_cast<std::size_t>(cell)].children[static_cast<std::size_t>(i)]);
+            added |= insert(item, cells_[static_cast<std::size_t>(cell)].child(i));
         }
         return added;
     }
@@ -72,7 +74,7 @@ bool RouteGrid::insert(int item, int cell) {
     split(cell);
     bool added = false;
     for (int i = 0; i < 4; ++i) {
-        added |= insert(item, cells_[static_cast<std::size_t>(cell)].children[static_cast<std::size_t>(i)]);
+        added |= insert(item, cells_[static_cast<std::size_t>(cell)].child(i));
     }
     return added;
 }
@@ -80,16 +82,17 @@ bool RouteGrid::insert(int item, int cell) {
 // Gives a leaf four children, each holding the leaf's items.
 void RouteGrid::split(int cell) {
     const Cell parent = cells_[static_cast<std::size_t>(cell)];
+    const auto first = static_cast<std::int32_t>(cells_.size());
     for (int i = 0; i < 4; ++i) {
         Cell child;
-        child.level = parent.level + 1;
-        child.x = parent.x * 2 + (i & 1);
-        child.y = parent.y * 2 + (i >> 1 & 1);
+        child.level = static_cast<std::int8_t>(parent.level + 1);
+        child.x = static_cast<std::int16_t>(parent.x * 2 + (i & 1));
+        child.y = static_cast<std::int16_t>(parent.y * 2 + (i >> 1 & 1));
         child.size = parent.size / 2;
         child.items = parent.items;
-        cells_[static_cast<std::size_t>(cell)].children[static_cast<std::size_t>(i)] = static_cast<int>(cells_.size());
         cells_.push_back(std::move(child));
     }
+    cells_[static_cast<std::size_t>(cell)].firstChild = first;
     cells_[static_cast<std::size_t>(cell)].items.clear();
 }
 
@@ -139,7 +142,7 @@ bool RouteGrid::removeFrom(int cell, int item, bool& merged) {
         return std::erase(c.items, item) > 0;
     }
     bool lost = false;
-    for (const int child : c.children) {
+    for (const int child : c.children()) {
         lost |= removeFrom(child, item, merged);
     }
     if (lost && mayMerge(cell, item)) {
@@ -152,7 +155,7 @@ bool RouteGrid::removeFrom(int cell, int item, bool& merged) {
 // than `removing`, would let `cell` be one leaf: the opposite of what makes insert split a leaf.
 bool RouteGrid::mayMerge(int cell, int removing) {
     std::vector<int> items;
-    for (const int child : cells_[static_cast<std::size_t>(cell)].children) {
+    for (const int child : cells_[static_cast<std::size_t>(cell)].children()) {
         const Cell& k = cells_[static_cast<std::size_t>(child)];
         if (!k.isLeaf()) {
             return false;
@@ -170,7 +173,7 @@ bool RouteGrid::mayMerge(int cell, int removing) {
     });
     if (whole) {
         c.items = std::move(items);
-        c.children = {-1, -1, -1, -1};
+        c.firstChild = -1;
     }
     return whole;
 }
@@ -185,7 +188,7 @@ void RouteGrid::rename(int cell, int from, int to) {
         std::replace(c.items.begin(), c.items.end(), from, to);
         return;
     }
-    for (const int child : c.children) {
+    for (const int child : c.children()) {
         rename(child, from, to);
     }
 }
@@ -198,7 +201,7 @@ void RouteGrid::dropUnusedCells() {
         const int cell = pending.back();
         pending.pop_back();
         newIndex[static_cast<std::size_t>(cell)] = 0;
-        for (const int child : cells_[static_cast<std::size_t>(cell)].children) {
+        for (const int child : cells_[static_cast<std::size_t>(cell)].children()) {
             if (child >= 0) {
                 pending.push_back(child);
             }
@@ -218,10 +221,8 @@ void RouteGrid::dropUnusedCells() {
     // Shrinking keeps the vector's room for the cells later items split off.
     cells_.erase(cells_.begin() + static_cast<std::ptrdiff_t>(kept), cells_.end());
     for (Cell& c : cells_) {
-        for (int& child : c.children) {
-            if (child >= 0) {
-                child = newIndex[static_cast<std::size_t>(child)];
-            }
+        if (c.firstChild >= 0) {
+            c.firstChild = newIndex[static_cast<std::size_t>(c.firstChild)];  // (the four stay together: they are kept or dropped as one)
         }
     }
 }
@@ -235,7 +236,7 @@ int RouteGrid::leafAt(float x, float y) const {
     while (!cells_[static_cast<std::size_t>(cell)].isLeaf()) {
         const RouteRect r = cells_[static_cast<std::size_t>(cell)].rect();
         const int i = (x >= (r.x0 + r.x1) / 2 ? 1 : 0) + (y >= (r.y0 + r.y1) / 2 ? 2 : 0);
-        cell = cells_[static_cast<std::size_t>(cell)].children[static_cast<std::size_t>(i)];
+        cell = cells_[static_cast<std::size_t>(cell)].child(i);
     }
     return cell;
 }

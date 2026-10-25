@@ -45,7 +45,7 @@ void linkAlong(const RouteGrid& grid, RouteLinks& links, int leaf, int side, int
         return;
     }
     for (const int child : kSideChildren[which]) {
-        linkAlong(grid, links, leaf, s.children[static_cast<std::size_t>(child)], which);
+        linkAlong(grid, links, leaf, s.child(child), which);
     }
 }
 
@@ -55,7 +55,7 @@ int touching(const RouteGrid& grid, int neighbour, int child) {
         return -1;
     }
     const Cell& n = grid.cells()[static_cast<std::size_t>(neighbour)];
-    return n.isLeaf() ? neighbour : n.children[static_cast<std::size_t>(child)];
+    return n.isLeaf() ? neighbour : n.child(child);
 }
 
 // Depth first, children in order. `sides` are the cells next to `cell` (+x, +y, -x, -y), each of its
@@ -68,7 +68,7 @@ void linkCell(const RouteGrid& grid, RouteLinks& links, int cell, const std::arr
         }
         return;
     }
-    const auto& k = c.children;
+    const auto k = c.children();
     const auto [px, py, mx, my] = sides;
     linkCell(grid, links, k[0], {k[1], k[2], touching(grid, mx, 1), touching(grid, my, 2)});
     linkCell(grid, links, k[1], {touching(grid, px, 0), k[3], k[0], touching(grid, my, 3)});

@@ -13,6 +13,14 @@
 // Mouse: middle-drag turns, right-drag pans, the wheel zooms. Keys: WASD or arrows pan, Q/E or
 // comma/period turn a quarter, Z/X or +/- zoom, Page Up/Down change storey, 1/2/3 or Tab walls
 // up/cutaway/down, R roofs on/off. --shot draws one frame to a file and exits.
+#ifdef __PS2__
+// On the console the same executable starts the console's lot mode (app/console_lot.hpp): no window, no game assets, no builder.
+#include "console_lot.hpp"
+
+int main(int argc, char** argv) {
+    return app::runConsoleLot(argc, argv);
+}
+#else
 #include "content/cameras.hpp"
 #include "content/install.hpp"
 #include "content/lighting.hpp"
@@ -678,3 +686,4 @@ int main(int argc, char** argv) {
     ts2::platform::quit();
     return result;
 }
+#endif  // __PS2__

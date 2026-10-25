@@ -24,6 +24,10 @@ void BehaviorClosure::visit(std::uint32_t group, std::uint16_t instance, std::ui
             visit(g, i, owner);
         } else if (in.opcode == vm_detail::kRunTreeByNameOpcode) {
             named(in, group, instance, pc, owner);
+        } else if (in.opcode == vm_detail::kCreateObjectOpcode && (in.operands[5] & vm_detail::kCreateGuidFromTemps) == 0) {
+            const auto& o = in.operands;
+            createdGuids.insert(static_cast<std::uint32_t>(o[0]) | static_cast<std::uint32_t>(o[1]) << 8 | static_cast<std::uint32_t>(o[2]) << 16 |
+                                static_cast<std::uint32_t>(o[3]) << 24);
         }
     }
 }
@@ -105,6 +109,7 @@ void BehaviorClosure::addTypes(const std::set<std::uint32_t>& guids) {
 void BehaviorClosure::run() {
     states.clear();
     trees.clear();
+    createdGuids.clear();
     namedSites = mode3Sites = mode3Reached = missingNames = 0;
     for (const auto& [owner, id] : start) {
         const auto [g, i] = resolve(id, owner);

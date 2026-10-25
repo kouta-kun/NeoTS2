@@ -428,6 +428,10 @@ struct Scene {
     std::function<std::optional<float>(int level, int x, int y)> floorCorner;
     // The level (see Instance::level) of a lot's ground storey.
     int groundLevel = 0;
+    // `floorHeight` sampled at the middle of every tile of every storey (storey 1 first, then row by row: index (storey - 1) * height + y) * width + x), kept
+    // in a baked scene that has no lot to ask. Empty when the scene has its `floorHeight`.
+    std::vector<float> floorGrid;
+    int floorGridStoreys = 0;
     // A lot's size in tiles along x and y, in its own coordinates from (0, 0). Zero when unknown.
     std::array<float, 2> lotSize{0, 0};
     // A lot's: the lights a thing standing at `inLot` (in the lot's own coordinates) gets from the

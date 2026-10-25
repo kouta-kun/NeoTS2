@@ -67,7 +67,11 @@ private:
     std::int32_t height_ = 0;
     std::int32_t firstLevel_ = 0;
     std::int32_t levelCount_ = 0;
-    std::vector<std::int32_t> quarterRoom_;
+    // The room of each quarter tile, as an index into `roomIds_` (0 is no room): a lot has few rooms and many quarter tiles, so one byte each.
+    std::vector<std::uint8_t> quarterRoom_;
+    std::vector<std::int32_t> roomIds_{kNoRoom};
+    std::uint8_t paletteIndex(std::int32_t room);
+    std::int32_t roomOf(std::size_t at) const { return roomIds_[quarterRoom_[at]]; }
     std::map<std::int32_t, RoomInfo> rooms_;
 };
 

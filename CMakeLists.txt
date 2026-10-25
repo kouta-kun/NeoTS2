@@ -369,6 +369,14 @@ if(PS2)
     target_link_directories(gs_lotview PRIVATE $ENV{PS2DEV}/gsKit/lib)
     target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
+    # NeoTS2 itself on the console: app/main.cpp starts the console's lot mode (app/console_lot.cpp) when built for it.
+    add_executable(neots2 app/main.cpp app/console_lot.cpp app/console_life.cpp src/platform/ps2/platform_ps2.cpp src/platform/time.cpp
+                   tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp tools/ps2test/pthread_light.cpp)
+    target_include_directories(neots2 PRIVATE app src)
+    target_link_libraries(neots2 PRIVATE ts2gs ts2renderplan ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad pthread)
+    target_compile_options(neots2 PRIVATE -fexceptions)
+    target_link_options(neots2 PRIVATE -Wl,--wrap=_open -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy -Wl,--wrap=pthread_mutex_lock
+        -Wl,--wrap=pthread_mutex_timedlock -Wl,--wrap=pthread_mutex_trylock -Wl,--wrap=pthread_mutex_unlock)
     # The simulation alone, from a simbank folder, as a console program (see tools/simmem).
     add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp tools/ps2test/pthread_light.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image pthread)

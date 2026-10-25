@@ -75,7 +75,7 @@ template <class Touches, class Visit> bool RouteLines::walk(Touches&& touches, V
             --depth;
             continue;
         }
-        const int child = cells[static_cast<std::size_t>(cell)].children[static_cast<std::size_t>(next++)];
+        const int child = cells[static_cast<std::size_t>(cell)].child(next++);
         if (child < 0 || static_cast<std::size_t>(child) >= cells.size()) {
             continue;
         }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <cstring>
 #include <set>
 #include <unordered_map>
@@ -698,6 +699,9 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     for (const auto& l : scene.lightSets) writeLighting(o, l);
     o.floats(scene.lotSize);
     o.i32(scene.groundLevel);
+    o.u32(static_cast<std::uint32_t>(scene.floorGridStoreys));
+    o.u32(static_cast<std::uint32_t>(scene.floorGrid.size()));
+    for (const float h : scene.floorGrid) o.f32(h);
     o.u32(static_cast<std::uint32_t>(scene.lightMaps ? scene.lightMaps->floors.size() : 0));
     if (scene.lightMaps && !scene.lightMaps->floors.empty()) {
         for (const int i : scene.lightMaps->floors) o.i32(i);
@@ -818,6 +822,19 @@ scene::Scene readHead(In& in, std::uint64_t imageArea, BakedMeshes* compact = nu
     for (auto& l : s.lightSets) l = readLighting(in);
     s.lotSize = in.floats<2>();
     s.groundLevel = in.i32();
+    s.floorGridStoreys = static_cast<int>(in.u32());
+    s.floorGrid.resize(in.count(4));
+    for (float& h : s.floorGrid) h = in.f32();
+    if (!s.floorGrid.empty() && s.floorGridStoreys > 0) {
+        // The floor's height at a lot position on a storey, from the tile it is on.
+        s.floorHeight = [grid = std::make_shared<const std::vector<float>>(s.floorGrid), storeys = s.floorGridStoreys,
+                         width = static_cast<int>(std::lround(s.lotSize[0])), height = static_cast<int>(std::lround(s.lotSize[1]))](int storey, float x, float y) {
+            const int tx = std::clamp(static_cast<int>(std::floor(x)), 0, width - 1), ty = std::clamp(static_cast<int>(std::floor(y)), 0, height - 1);
+            const int level = std::clamp(storey - 1, 0, storeys - 1);
+            return (*grid)[(static_cast<std::size_t>(level) * static_cast<std::size_t>(height) + static_cast<std::size_t>(ty)) * static_cast<std::size_t>(width) +
+                           static_cast<std::size_t>(tx)];
+        };
+    }
     if (const std::size_t floors = in.count(4); floors > 0) {
         scene::LightMaps maps;
         for (std::size_t i = 0; i < floors; ++i) maps.floors.push_back(in.i32());
