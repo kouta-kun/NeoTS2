@@ -7,7 +7,9 @@
 #include "scene/builder.hpp"
 #include "scene/lot_scene.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -22,6 +24,8 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--max-side" && i + 1 < argc) {
             options.maxSide = static_cast<unsigned>(std::stoul(argv[++i]));
+        } else if (a == "--no-weld") {
+            options.weld = false;
         } else if (a == "--mesh-keep" && i + 1 < argc) {
             options.meshKeep = std::stod(argv[++i]);
         } else if (a == "--mesh-error" && i + 1 < argc) {
@@ -54,6 +58,9 @@ int main(int argc, char** argv) {
         std::printf("baked %.2f MiB: images %.2f MiB (4-bit %zu, 8-bit %zu, 32-bit %zu), meshes %.2f MiB (%zu primitives, %zu triangles from %zu), rest %.2f MiB\n",
                     double(bytes.size()) / 1048576.0, double(stats.imageBytes) / 1048576.0, stats.byBits[0], stats.byBits[1], stats.byBits[2],
                     double(stats.meshBytes) / 1048576.0, stats.primitives, stats.triangles, stats.trianglesBefore, double(stats.otherBytes) / 1048576.0);
+        std::printf("vertices: %zu from %zu (%.2f a triangle, was %.2f)\n", stats.vertices, stats.verticesBefore,
+                    double(stats.vertices) / double(std::max<std::size_t>(1, stats.triangles)),
+                    double(stats.verticesBefore) / double(std::max<std::size_t>(1, stats.trianglesBefore)));
         const ts2::scene::Scene back = ts2::render::readBakedScene(bytes);
         const bool same = back.images.size() == scene.images.size() && back.materials.size() == scene.materials.size() &&
                           back.meshes.size() == scene.meshes.size() && back.instances.size() == scene.instances.size();
@@ -74,6 +81,18 @@ int main(int argc, char** argv) {
                 reference.resize(full.positions.size() / 3 * ts2::render::kVertexFloats);
                 ts2::render::packPrimitiveVertices(full, reference.data());
                 ++checked;
+                // The view must give the same positions and indices as the expansion.
+                ts2::render::PrimitiveView view;
+                ts2::render::viewPrimitive(compact, compact.meshes[m][k], view);
+                bool viewOk = view.vertices == full.positions.size() / 3 && view.indices == full.indices.size();
+                for (std::size_t i = 0; viewOk && i < view.vertices * 3; ++i) {
+                    const float lo = view.lo[i % 3], hi = view.hi[i % 3];
+                    viewOk = std::abs(lo + (hi - lo) * (static_cast<float>(view.positions[i]) / 65535.0f) - full.positions[i]) < 1e-5f * (1 + std::abs(hi - lo));
+                }
+                for (std::size_t i = 0; viewOk && i < view.indices; ++i) {
+                    viewOk = (view.wideIndices ? static_cast<const std::uint32_t*>(view.indexData)[i] : static_cast<const std::uint16_t*>(view.indexData)[i]) == full.indices[i];
+                }
+                wrong += viewOk ? 0 : 1;
                 if (expanded.vertices != reference || expanded.indices != full.indices || compact.meshes[m][k].vertices != full.positions.size() / 3 ||
                     compact.meshes[m][k].indices != full.indices.size()) {
                     ++wrong;

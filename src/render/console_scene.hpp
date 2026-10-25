@@ -18,7 +18,7 @@
 namespace ts2::render {
 
 struct BakeStats {
-    std::size_t images = 0, meshes = 0, primitives = 0, instances = 0, triangles = 0, trianglesBefore = 0;
+    std::size_t images = 0, meshes = 0, primitives = 0, instances = 0, triangles = 0, trianglesBefore = 0, vertices = 0, verticesBefore = 0;
     std::size_t imageBytes = 0, meshBytes = 0, otherBytes = 0;
     std::size_t byBits[3] = {0, 0, 0};  // images stored as 4-bit, 8-bit, 32-bit
 };
@@ -55,6 +55,24 @@ struct BakedMeshes {
 // Reads a head as readBakedHead does, but leaves the meshes in `meshes` as bytes (it takes the head over). The scene it returns has
 // no meshes, and its images are as readBakedHead's.
 [[nodiscard]] scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& meshes);
+
+// A primitive's arrays where they lie in the head, for reading them without expanding the primitive. Every array is aligned for the type
+// it is read as. Positions are x, y, z per vertex in 16 bits over each axis's range (value = lo + u / 65535 * (hi - lo)), texture coordinates
+// u, v in 16 bits over one range, normals three signed bytes (/127), light-map coordinates 16 bits (/65535), colours and alphas bytes (/255).
+struct PrimitiveView {
+    std::uint32_t vertices = 0, indices = 0;
+    const std::uint16_t* positions = nullptr;
+    float lo[3]{}, hi[3]{};
+    const std::uint16_t* uvs = nullptr;  // null when there are none
+    float uvLo = 0, uvHi = 0;
+    const std::int8_t* normals = nullptr;
+    const std::uint8_t* colors = nullptr;  // three bytes a vertex, or null
+    const std::uint8_t* alphas = nullptr;
+    const std::uint16_t* lightUvs = nullptr;
+    const void* indexData = nullptr;  // std::uint16_t, or std::uint32_t when `wideIndices`
+    bool wideIndices = false;
+};
+void viewPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, PrimitiveView& out);
 
 // A primitive's vertices (kVertexFloats floats each, see mesh_pack.hpp) and indices, expanded from its bytes for drawing.
 struct ExpandedPrimitive {

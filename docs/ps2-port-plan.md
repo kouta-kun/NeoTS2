@@ -475,3 +475,17 @@ The whole lot draws: house, roof, trees, fences, road, kerbs, 331 images (4/8/32
   frame, plus expanding each primitive's bytes. It is far too slow whatever the exact ratio between PCSX2 and a real console. Next:
   profile the phases; cache or bake the vertex lighting (it does not change with the camera); cull at instance level; move transform
   to VU1.
+
+**Speeding up the EE side (2026-10-25).** Profile of the first full-lot frame (PCSX2, 17.9 s): packet building 10.5 s, expanding primitives 3.3, vertex lighting 3.3,
+transform 0.6. Changes and results, same camera, N001 Lot 11 (about 377k triangles in the draws, 203k drawn, 1.29 M vertices):
+
+| Step | Frame |
+|---|---|
+| first full-lot frame | 17.9 s |
+| each vertex projected once into a ready 48-byte GS vertex; triangles copied into packed-format GIF packets written straight into the draw queue; transform straight from the 16-bit coordinates (no expansion) | 4.0 s |
+| lit vertex colours cached per instance and primitive, keyed by a hash of the lights/material/place (5 MiB budget; 3 MiB was too small and left 543 draws re-lit every frame) | 2.0 s |
+
+Left per frame: transform 1.46 s (1.29 M vertices), emit 0.26 s, the rest small. Vertex counts are inherent: the meshes have 2.2 vertices per
+triangle (hard edges and texture seams), welding identical vertices removes only 12% (kept: 0.4 MiB smaller). The remaining work is the vector unit
+(transform, clip, cull, light and build packets on VU1), and drawing fewer vertices (distance LODs, smaller instances). A 16-bit colour buffer and Z
+would give the textures about 2.5 MiB of VRAM instead of 0.75 MB. Format is version 5: every array aligned for the type it is read as.

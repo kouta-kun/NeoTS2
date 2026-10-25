@@ -87,9 +87,16 @@ int main(int argc, char** argv) {
         camera.target = {cx, cy, 0};
         camera.eye = {cx + scene.lotSize[0] * 0.9f, cy - scene.lotSize[1] * 0.9f, scene.lotSize[0] * 0.8f};
         camera.farPlane = 400;
-        for (int frame = 0; frame < 600; ++frame) {
+        for (int frame = 0; frame < 3; ++frame) {
             if (!renderer.draw(camera)) {
                 break;
+            }
+            if (frame == 1) {
+                std::printf("gs_lotview: %zu vertices in the draws, lit colours: %zu kept, %zu worked out, cache %zu KiB\n", renderer.lastFrame().vertices,
+                            renderer.lastFrame().litHits, renderer.lastFrame().litMisses, renderer.lastFrame().litCacheKiB);
+                const auto& s = renderer.lastFrame();
+                std::printf("gs_lotview: phases (s): collect %.2f expand %.2f light %.2f transform %.2f state %.2f emit %.2f submit+sync %.2f\n", s.collect,
+                            s.expand, s.light, s.transform, s.state, s.emit, s.submit);
             }
             if (frame < 3 || frame % 100 == 0) {
                 const auto& s = renderer.lastFrame();

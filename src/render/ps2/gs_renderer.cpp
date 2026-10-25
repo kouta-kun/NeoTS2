@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <malloc.h>
 #include <span>
 
@@ -25,6 +26,12 @@ constexpr float kGuard = 3.0f;           // clip to this many times the screen's
 constexpr float kZScale = 16777215.0f;   // 24-bit Z
 constexpr std::size_t kMaxTrianglesPerPacket = 3000;  // nine quadwords each; a GIF tag counts at most 32767
 constexpr float kBlendedLightMapShare = 0.5f;
+
+double now() {
+    timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return static_cast<double>(t.tv_sec) + static_cast<double>(t.tv_nsec) * 1e-9;
+}
 
 unsigned log2Of(unsigned v) {
     unsigned n = 0;
@@ -293,42 +300,9 @@ GsTexture* GsRenderer::textureFor(int index) {
     return g.textures[i].get();
 }
 
-IRenderer::Prepared GsRenderer::prepare(const scene::Scene& scene) const {
-    auto p = std::make_unique<GpuPrepared>();
-    p->gs = gs_;
-    p->gpu = std::make_unique<Gpu>();
-    Gpu& g = *p->gpu;
-    reserveMeshData(scene.meshes, 0, g.data);
-    g.meshes.reserve(scene.meshes.size());
-    for (const scene::Mesh& mesh : scene.meshes) {
-        g.meshes.push_back(packMesh(mesh, scene.materials.size(), 0, g.data));
-    }
-    g.textures.resize(scene.images.size());
-    g.lastUsed.assign(scene.images.size(), 0);
-    g.bytes.assign(scene.images.size(), 0);
-    g.sources.reserve(scene.images.size());
-    for (std::size_t i = 0; i < scene.images.size(); ++i) {
-        scene::Image info;  // the place of the image without its pixels
-        info.width = scene.images[i].width;
-        info.height = scene.images[i].height;
-        info.consoleOffset = scene.images[i].consoleOffset;
-        info.consoleSize = scene.images[i].consoleSize;
-        g.sources.push_back(std::move(info));
-        if (!scene.images[i].console.empty()) {
-            g.textures[i] = makeTexture(scene.images[i].console);
-            g.bytes[i] = scene.images[i].console.size();
-            g.resident += g.bytes[i];
-        }
-    }
-    for (const scene::Instance& instance : scene.instances) {
-        if (instance.lightMap >= 0 && static_cast<std::size_t>(instance.lightMap) < scene.images.size() && !g.lightImages.contains(instance.lightMap) &&
-            !scene.images[static_cast<std::size_t>(instance.lightMap)].console.empty()) {
-            g.lightImages[instance.lightMap] =
-                decodeConsoleTexture(content::ConsoleTexture::parse(scene.images[static_cast<std::size_t>(instance.lightMap)].console));
-        }
-    }
-    copyScene(*p, scene);
-    return Prepared(std::move(p));
+IRenderer::Prepared GsRenderer::prepare(const scene::Scene&) const {
+    // A scene the builder made is not drawn here (the console cannot hold it); it arrives baked (see prepareBaked).
+    return Prepared(std::make_unique<GpuPrepared>());
 }
 
 IRenderer::Prepared GsRenderer::prepareBaked(scene::Scene scene, BakedMeshes meshes) const {
@@ -406,61 +380,137 @@ IRenderer::Prepared GsRenderer::swap(Prepared prepared) {
     return prepared;
 }
 
+namespace {
+
+std::uint64_t hashWords(const void* data, std::size_t bytes, std::uint64_t h = 0xCBF29CE484222325ull) {
+    const auto* w = static_cast<const std::uint32_t*>(data);
+    for (std::size_t i = 0; i < bytes / 4; ++i) {
+        h = (h ^ w[i]) * 0x100000001B3ull;
+    }
+    return h;
+}
+
+constexpr std::size_t kTrianglesPerPacket = 2000;  // three vertices of three quadwords each; a GIF tag counts at most 32,767 loops
+
+} // namespace
+
 void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int blend) {
-    std::vector<ClipVertex> clip;
-    std::vector<std::uint64_t> packet;
-    // What the GS was last told, so a draw that changes nothing sends nothing.
+    const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
+    std::vector<ClipVertex> clipVertices;
+    std::vector<GsVertex> clipOut;
     for (const Draw& d : list) {
         const GpuPrimitive& p = *d.primitive;
-        if (p.skinned || (!gpu_->baked && gpu_->data.vertices.empty())) {
+        if (p.skinned || !gpu_->baked) {
             continue;
         }
+        const BakedPrimitive& baked = *gpu_->refs[p.firstVertex];
         const scene::Material* m = d.material;
         const DrawUniforms u = FramePlan::uniformsFor(*this, *this, f, d, blend);
         const VertexUniforms& vu = u.vertex.frame;
         const FragmentUniforms& fu = u.fragment;
         ++frame_.draws;
 
-        const float* vertices = nullptr;
-        const std::uint32_t* indices = nullptr;
-        if (gpu_->baked) {
-            expandPrimitive(gpu_->bakedMeshes, *gpu_->refs[p.firstVertex], expanded_);
-            vertices = expanded_.vertices.data();
-            indices = expanded_.indices.data();
-        } else {
-            vertices = &gpu_->data.vertices[static_cast<std::size_t>(p.firstVertex) * kVertexFloats];
-            indices = &gpu_->data.indices[p.firstIndex];
+        double t0 = now();
+        PrimitiveView view;
+        viewPrimitive(gpu_->bakedMeshes, baked, view);
+        if (view.positions == nullptr || view.indexData == nullptr) {
+            continue;
         }
-        const scene::Image* lightImage = nullptr;
-        const bool lightMapped = fu.lightMap[0] > 0;
-        if (lightMapped) {
-            if (const auto found = gpu_->lightImages.find(d.instance->lightMap); found != gpu_->lightImages.end()) {
-                lightImage = &found->second;
+        const unsigned n = view.vertices;
+
+        // The vertices' lit colours: kept from the last frame while nothing that lights them changed (the lights, the object's place and
+        // material), else worked out from the primitive expanded.
+        const std::uint8_t* colours = nullptr;
+        {
+            std::uint64_t hash = hashWords(reinterpret_cast<const std::uint8_t*>(&vu) + offsetof(VertexUniforms, model), sizeof vu - offsetof(VertexUniforms, model));
+            hash = hashWords(&fu, sizeof fu, hash);
+            const std::uint64_t key = (static_cast<std::uint64_t>(d.instance - instances_.data()) << 32) | p.firstVertex;
+            auto found = litCache_.find(key);
+            frame_.vertices += n;
+            if (found != litCache_.end() && found->second.hash == hash && found->second.rgba.size() == std::size_t{n} * 4) {
+                colours = found->second.rgba.data();
+                ++frame_.litHits;
+            } else {
+                ++frame_.litMisses;
+                expandPrimitive(gpu_->bakedMeshes, baked, expanded_);
+                const scene::Image* lightImage = nullptr;
+                const bool lightMapped = fu.lightMap[0] > 0;
+                if (lightMapped) {
+                    if (const auto image = gpu_->lightImages.find(d.instance->lightMap); image != gpu_->lightImages.end()) {
+                        lightImage = &image->second;
+                    }
+                }
+                // The GS reads a vertex colour of 0x80 as 1 and doubles up to 0xFF, as the texture environment scale of the OpenGL 1 path.
+                vertexColors(vu, fu, expanded_.vertices.data(), n, lightMapped && lightImage == nullptr ? std::min(1.0f, kBlendedLightMapShare * fu.lightMap[0]) : 1.0f,
+                             0.5f, lightImage, nullptr, litColors_);
+                const std::size_t bytes = litColors_.size();
+                if (found != litCache_.end()) {
+                    litCacheBytes_ -= found->second.rgba.size();
+                    litCache_.erase(found);
+                }
+                if (litCacheBytes_ + bytes <= litCacheBudget_) {
+                    LitColors& entry = litCache_[key];
+                    entry.hash = hash;
+                    entry.rgba = litColors_;
+                    litCacheBytes_ += bytes;
+                    colours = entry.rgba.data();
+                } else {
+                    colours = litColors_.data();
+                }
             }
         }
-        // The GS reads a vertex colour of 0x80 as 1 and doubles up to 0xFF, as the texture environment scale of the OpenGL 1 path.
-        vertexColors(vu, fu, vertices, p.vertices, lightMapped && lightImage == nullptr ? std::min(1.0f, kBlendedLightMapShare * fu.lightMap[0]) : 1.0f,
-                     0.5f, lightImage, nullptr, litColors_);
+        frame_.light += now() - t0;
+        t0 = now();
 
-        // Where each vertex lands in clip space.
+        // Each vertex projected once, straight from its 16-bit coordinates: the range's scale is folded into the matrix's columns.
         const Mat4 mvp = f.viewProjection * fromRows(vu.model);
-        clip.resize(p.vertices);
-        for (unsigned i = 0; i < p.vertices; ++i) {
-            const float* v = vertices + std::size_t{i} * kVertexFloats;
-            ClipVertex& c = clip[i];
-            const auto& r = mvp.m;
-            c.x = r[0] * v[0] + r[1] * v[1] + r[2] * v[2] + r[3];
-            c.y = r[4] * v[0] + r[5] * v[1] + r[6] * v[2] + r[7];
-            c.z = r[8] * v[0] + r[9] * v[1] + r[10] * v[2] + r[11];
-            c.w = r[12] * v[0] + r[13] * v[1] + r[14] * v[2] + r[15];
-            const std::uint8_t* col = &litColors_[std::size_t{i} * 4];
-            c.r = col[0];
-            c.g = col[1];
-            c.b = col[2];
-            c.a = col[3] * 0.5f;  // 0x80 is opaque
-            c.u = v[6];
-            c.v = v[7];
+        const auto& r = mvp.m;
+        const float scale[3] = {(view.hi[0] - view.lo[0]) / 65535.0f, (view.hi[1] - view.lo[1]) / 65535.0f, (view.hi[2] - view.lo[2]) / 65535.0f};
+        float column[3][4], base[4];
+        for (int row = 0; row < 4; ++row) {
+            for (int k = 0; k < 3; ++k) {
+                column[k][row] = r[static_cast<std::size_t>(row * 4 + k)] * scale[k];
+            }
+            base[row] = r[static_cast<std::size_t>(row * 4)] * view.lo[0] + r[static_cast<std::size_t>(row * 4 + 1)] * view.lo[1] +
+                        r[static_cast<std::size_t>(row * 4 + 2)] * view.lo[2] + r[static_cast<std::size_t>(row * 4 + 3)];
         }
+        const float uvScale = (view.uvHi - view.uvLo) / 65535.0f;
+        screen_.resize(n);
+        screenXy_.resize(std::size_t{n} * 2);
+        codes_.resize(n);
+        for (unsigned i = 0; i < n; ++i) {
+            const float ux = view.positions[i * 3], uy = view.positions[i * 3 + 1], uz = view.positions[i * 3 + 2];
+            ClipVertex c;
+            c.x = base[0] + column[0][0] * ux + column[1][0] * uy + column[2][0] * uz;
+            c.y = base[1] + column[0][1] * ux + column[1][1] * uy + column[2][1] * uz;
+            c.z = base[2] + column[0][2] * ux + column[1][2] * uy + column[2][2] * uz;
+            c.w = base[3] + column[0][3] * ux + column[1][3] * uy + column[2][3] * uz;
+            const unsigned code = outcode(c);
+            codes_[i] = static_cast<std::uint8_t>(code);
+            if (code != 0) {
+                continue;  // not drawn as it is: a triangle with this vertex is dropped or clipped (see below)
+            }
+            const float q = 1.0f / c.w;
+            const float sx = (c.x * q * 0.5f + 0.5f) * width, sy = (0.5f - c.y * q * 0.5f) * height;
+            screenXy_[i * 2] = sx;
+            screenXy_[i * 2 + 1] = sy;
+            GsVertex& v = screen_[i];
+            const float u0 = view.uvs ? view.uvLo + uvScale * view.uvs[i * 2] : 0.0f, v0 = view.uvs ? view.uvLo + uvScale * view.uvs[i * 2 + 1] : 0.0f;
+            v.s = u0 * q;
+            v.t = v0 * q;
+            v.q = q;
+            v.unused = 0;
+            v.r = colours[i * 4];
+            v.g = colours[i * 4 + 1];
+            v.b = colours[i * 4 + 2];
+            v.a = colours[i * 4 + 3] >> 1;
+            v.x = static_cast<std::uint32_t>(gsKit_float_to_int_x(gs_, sx));
+            v.y = static_cast<std::uint32_t>(gsKit_float_to_int_y(gs_, sy));
+            v.z = static_cast<std::uint32_t>(std::clamp(c.z * q, 0.0f, 1.0f) * kZScale);
+            v.adc = 0;
+        }
+        frame_.transform += now() - t0;
+        t0 = now();
 
         // The texture, and the state it and the material ask for.
         GsTexture* texture = nullptr;
@@ -473,8 +523,6 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
         const unsigned ctx = gs_->PrimContext;
         makeRoom(gs_, 4096);
         if (texture) {
-            const std::size_t before = frame_.uploads;
-            (void)before;
             gsKit_TexManager_bind(gs_, &texture->tex);
             const GSTEXTURE& t = texture->tex;
             const bool hasClut = t.Clut != nullptr;
@@ -493,76 +541,134 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
         const unsigned reference = alphaTest ? static_cast<unsigned>(std::clamp(fu.alphaCutoff * 128.0f, 0.0f, 255.0f)) : 0;
         ad(gs_, GS_SETREG_TEST(alphaTest ? 1 : 0, 5, reference, 0, 0, 0, 1, 2), GS_TEST_1 + ctx);
         ad(gs_, GS_SETREG_ZBUF_1(gs_->ZBuffer / 8192, gs_->PSMZ, blended ? 1 : 0), GS_ZBUF_1);
+        frame_.state += now() - t0;
+        t0 = now();
 
-        // Triangles, clipped and culled.
+        // Which triangles are drawn: those with all three vertices inside the volume that face the camera are copied as they are; those that
+        // cross a plane are clipped; the rest are dropped.
         const bool cull = !(m && m->doubleSided);
-        const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
-        packet.clear();
-        std::size_t inPacket = 0;
-        const auto flush = [&] {
-            if (packet.empty()) {
-                return;
-            }
-            const std::size_t qwords = packet.size() / 2 + 1;  // the PRIM register and the vertices
-            makeRoom(gs_, qwords * 16 + 64);
-            auto* out = static_cast<std::uint64_t*>(gsKit_heap_alloc(gs_, static_cast<int>(qwords), static_cast<int>(qwords * 16), GIF_AD));
-            *out++ = GIF_TAG_AD(qwords);
-            *out++ = GIF_AD;
-            *out++ = GS_SETREG_PRIM(GS_PRIM_PRIM_TRIANGLE, 1, texture ? 1 : 0, 0, blended ? 1 : 0, 0, 0, ctx, 0);
-            *out++ = GS_PRIM;
-            std::memcpy(out, packet.data(), packet.size() * 8);
-            packet.clear();
-            inPacket = 0;
-        };
-        const auto emit = [&](const ClipVertex& v) {
-            const float q = 1.0f / v.w;
-            const float sx = (v.x * q * 0.5f + 0.5f) * width, sy = (0.5f - v.y * q * 0.5f) * height;
-            const float sz = std::clamp(v.z * q, 0.0f, 1.0f) * kZScale;
-            const auto byte = [](float c) { return static_cast<std::uint64_t>(std::clamp(c, 0.0f, 255.0f)); };
-            packet.push_back(byte(v.r) | (byte(v.g) << 8) | (byte(v.b) << 16) | (byte(v.a) << 24) | (floatBits(q) << 32));
-            packet.push_back(GS_RGBAQ);
-            packet.push_back(floatBits(v.u * q) | (floatBits(v.v * q) << 32));
-            packet.push_back(GS_ST);
-            packet.push_back(static_cast<std::uint64_t>(gsKit_float_to_int_x(gs_, sx) & 0xFFFF) | (static_cast<std::uint64_t>(gsKit_float_to_int_y(gs_, sy) & 0xFFFF) << 16) |
-                             (static_cast<std::uint64_t>(static_cast<std::uint32_t>(sz)) << 32));
-            packet.push_back(GS_XYZ2);
-        };
-        const auto emitTriangle = [&](const ClipVertex& a, const ClipVertex& b, const ClipVertex& c) {
-            if (cull) {
-                const float ax = a.x / a.w, ay = a.y / a.w, bx = b.x / b.w, by = b.y / b.w, cx = c.x / c.w, cy = c.y / c.w;
-                if ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay) <= 0) {
-                    ++frame_.culled;
-                    return;
-                }
-            }
-            emit(a);
-            emit(b);
-            emit(c);
-            ++frame_.drawn;
-            if (++inPacket >= kMaxTrianglesPerPacket) {
-                flush();
-            }
-        };
-        for (unsigned k = 0; k + 2 < p.count; k += 3) {
-            const ClipVertex &a = clip[indices[k]], &b = clip[indices[k + 1]], &c = clip[indices[k + 2]];
-            ++frame_.triangles;
-            const unsigned oa = outcode(a), ob = outcode(b), oc = outcode(c);
-            if ((oa & ob & oc) != 0) {
-                continue;  // all outside one plane
-            }
-            if ((oa | ob | oc) == 0) {
-                emitTriangle(a, b, c);
+        const bool wide = view.wideIndices;
+        const auto* index16 = static_cast<const std::uint16_t*>(view.indexData);
+        const auto* index32 = static_cast<const std::uint32_t*>(view.indexData);
+        const auto indexAt = [&](std::size_t k) { return wide ? index32[k] : std::uint32_t{index16[k]}; };
+        visibleTris_.clear();
+        clippedTris_.clear();
+        const std::uint32_t triangles = view.indices / 3;
+        for (std::uint32_t k = 0; k < triangles; ++k) {
+            const std::uint32_t a = indexAt(k * 3), b = indexAt(k * 3 + 1), c = indexAt(k * 3 + 2);
+            if (a >= n || b >= n || c >= n) {
                 continue;
             }
-            ++frame_.clipped;
-            const ClipVertex in[3] = {a, b, c};
-            ClipVertex poly[16];
-            const int n = clipPolygon(in, 3, poly);
-            for (int i = 1; i + 1 < n; ++i) {
-                emitTriangle(poly[0], poly[i], poly[i + 1]);
+            const unsigned ca = codes_[a], cb = codes_[b], cc = codes_[c];
+            if ((ca & cb & cc) != 0) {
+                continue;  // all outside one plane
             }
+            if ((ca | cb | cc) != 0) {
+                clippedTris_.push_back(k);
+                continue;
+            }
+            if (cull) {
+                const float* sa = &screenXy_[a * 2];
+                const float* sb = &screenXy_[b * 2];
+                const float* sc = &screenXy_[c * 2];
+                // Screen y runs down, so the faces that look at the camera wind the other way.
+                if ((sb[0] - sa[0]) * (sc[1] - sa[1]) - (sc[0] - sa[0]) * (sb[1] - sa[1]) >= 0) {
+                    ++frame_.culled;
+                    continue;
+                }
+            }
+            visibleTris_.push_back(k);
         }
-        flush();
+        frame_.triangles += triangles;
+        frame_.clipped += clippedTris_.size();
+
+        // The packets: one GIF tag, then three quadwords a vertex. Written straight into the draw queue.
+        const std::uint64_t prim = GS_SETREG_PRIM(GS_PRIM_PRIM_TRIANGLE, 1, texture ? 1 : 0, 0, blended ? 1 : 0, 0, 0, ctx, 0);
+        const auto packet = [&](std::size_t count, const auto& vertexOf) {
+            for (std::size_t done = 0; done < count;) {
+                const std::size_t batch = std::min(kTrianglesPerPacket, count - done);
+                const std::size_t qwords = batch * 9;
+                makeRoom(gs_, qwords * 16 + 64);
+                auto* out = static_cast<std::uint64_t*>(gsKit_heap_alloc(gs_, static_cast<int>(qwords), static_cast<int>(qwords * 16), GIF_AD));
+                *out++ = GIF_TAG(batch * 3, 1, 1, prim, GSKIT_GIF_FLG_PACKED, 3);
+                *out++ = 0x512;  // ST, RGBAQ, XYZ2
+                auto* dst = reinterpret_cast<GsVertex*>(out);
+                for (std::size_t t = 0; t < batch; ++t) {
+                    vertexOf(done + t, dst);
+                    dst += 3;
+                }
+                done += batch;
+            }
+        };
+        packet(visibleTris_.size(), [&](std::size_t t, GsVertex* dst) {
+            const std::uint32_t k = visibleTris_[t];
+            dst[0] = screen_[indexAt(k * 3)];
+            dst[1] = screen_[indexAt(k * 3 + 1)];
+            dst[2] = screen_[indexAt(k * 3 + 2)];
+        });
+        frame_.drawn += visibleTris_.size();
+
+        // The few that cross a plane: cut to it, each piece projected afresh.
+        if (!clippedTris_.empty()) {
+            clipOut.clear();
+            const auto corner = [&](std::uint32_t index) {
+                const float ux = view.positions[index * 3], uy = view.positions[index * 3 + 1], uz = view.positions[index * 3 + 2];
+                ClipVertex c;
+                c.x = base[0] + column[0][0] * ux + column[1][0] * uy + column[2][0] * uz;
+                c.y = base[1] + column[0][1] * ux + column[1][1] * uy + column[2][1] * uz;
+                c.z = base[2] + column[0][2] * ux + column[1][2] * uy + column[2][2] * uz;
+                c.w = base[3] + column[0][3] * ux + column[1][3] * uy + column[2][3] * uz;
+                c.r = colours[index * 4];
+                c.g = colours[index * 4 + 1];
+                c.b = colours[index * 4 + 2];
+                c.a = colours[index * 4 + 3] * 0.5f;
+                c.u = view.uvs ? view.uvLo + uvScale * view.uvs[index * 2] : 0.0f;
+                c.v = view.uvs ? view.uvLo + uvScale * view.uvs[index * 2 + 1] : 0.0f;
+                return c;
+            };
+            const auto project = [&](const ClipVertex& c, float& sx, float& sy) {
+                const float q = 1.0f / c.w;
+                sx = (c.x * q * 0.5f + 0.5f) * width;
+                sy = (0.5f - c.y * q * 0.5f) * height;
+                GsVertex v;
+                v.s = c.u * q;
+                v.t = c.v * q;
+                v.q = q;
+                v.unused = 0;
+                const auto byte = [](float x) { return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 255.0f)); };
+                v.r = byte(c.r);
+                v.g = byte(c.g);
+                v.b = byte(c.b);
+                v.a = byte(c.a);
+                v.x = static_cast<std::uint32_t>(gsKit_float_to_int_x(gs_, sx));
+                v.y = static_cast<std::uint32_t>(gsKit_float_to_int_y(gs_, sy));
+                v.z = static_cast<std::uint32_t>(std::clamp(c.z * q, 0.0f, 1.0f) * kZScale);
+                v.adc = 0;
+                return v;
+            };
+            for (const std::uint32_t k : clippedTris_) {
+                const ClipVertex in[3] = {corner(indexAt(k * 3)), corner(indexAt(k * 3 + 1)), corner(indexAt(k * 3 + 2))};
+                ClipVertex poly[16];
+                const int count = clipPolygon(in, 3, poly);
+                for (int i = 1; i + 1 < count; ++i) {
+                    float x[3], y[3];
+                    const GsVertex a = project(poly[0], x[0], y[0]), b = project(poly[i], x[1], y[1]), c = project(poly[i + 1], x[2], y[2]);
+                    if (cull && (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]) >= 0) {
+                        continue;
+                    }
+                    clipOut.push_back(a);
+                    clipOut.push_back(b);
+                    clipOut.push_back(c);
+                }
+            }
+            packet(clipOut.size() / 3, [&](std::size_t t, GsVertex* dst) {
+                dst[0] = clipOut[t * 3];
+                dst[1] = clipOut[t * 3 + 1];
+                dst[2] = clipOut[t * 3 + 2];
+            });
+            frame_.drawn += clipOut.size() / 3;
+        }
+        frame_.emit += now() - t0;
     }
 }
 
@@ -573,14 +679,19 @@ bool GsRenderer::draw(const Camera& camera) {
     gsKit_clear(gs_, GS_SETREG_RGBAQ(static_cast<int>(clear_[0] * 255), static_cast<int>(clear_[1] * 255), static_cast<int>(clear_[2] * 255), 0x80, 0));
     if (drawScene_ && gpu_) {
         std::vector<Draw> opaque, layers, blended;
+        const double c0 = now();
         FramePlan::collectDraws(*this, *this, f, opaque, layers, blended);
+        frame_.collect = now() - c0;
         drawList(f, opaque, 0);
         drawList(f, layers, 1);
         drawList(f, blended, 1);
     }
     frame_.textureBytes = gpu_ ? gpu_->resident : 0;
+    frame_.litCacheKiB = litCacheBytes_ / 1024;
+    const double s0 = now();
     gsKit_queue_exec(gs_);
     gsKit_sync_flip(gs_);
+    frame_.submit = now() - s0;
     gsKit_TexManager_nextFrame(gs_);
     return true;
 }

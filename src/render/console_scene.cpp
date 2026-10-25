@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <unordered_map>
 #include <stdexcept>
 
 namespace ts2::render {
@@ -13,12 +14,13 @@ namespace ts2::render {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x31435343;  // "CSC1"
-constexpr std::uint32_t kVersion = 4;
+constexpr std::uint32_t kVersion = 5;
 
 class Out {
 public:
     void u8(std::uint8_t v) { bytes.push_back(v); }
     void u16(std::uint16_t v) { raw(&v, 2); }
+    void align4() { while (bytes.size() % 4 != 0) bytes.push_back(0); }
     void u32(std::uint32_t v) { raw(&v, 4); }
     void i32(std::int32_t v) { raw(&v, 4); }
     void f32(float v) { raw(&v, 4); }
@@ -72,6 +74,8 @@ public:
         pos_ += n;
     }
     std::size_t position() const { return pos_; }
+    void align4() { skip((4 - pos_ % 4) % 4); }
+    const std::uint8_t* here() const { return data_.data() + pos_; }
 
 private:
     std::span<const std::uint8_t> data_;
@@ -157,6 +161,7 @@ scene::Material readMaterial(In& in) {
 // A list of floats as 16-bit values across their own range (a mesh's positions, texture coordinates): the range (min and
 // max, 8 bytes), then a u16 for each.
 void writeQuantized(Out& o, const std::vector<float>& v) {
+    o.align4();
     o.u32(static_cast<std::uint32_t>(v.size()));
     if (v.empty()) {
         return;
@@ -171,6 +176,7 @@ void writeQuantized(Out& o, const std::vector<float>& v) {
 }
 
 std::vector<float> readQuantized(In& in) {
+    in.align4();
     std::vector<float> v(in.count(2));
     if (v.empty()) {
         return v;
@@ -184,6 +190,7 @@ std::vector<float> readQuantized(In& in) {
 
 // Floats in -1..1 (normals) or 0..1 (colours, alphas, light-map coordinates) as bytes or 16-bit values.
 void writeUnit(Out& o, const std::vector<float>& v, bool signedValues, bool wide) {
+    o.align4();
     o.u32(static_cast<std::uint32_t>(v.size()));
     for (const float f : v) {
         const float c = std::clamp(f, signedValues ? -1.0f : 0.0f, 1.0f);
@@ -198,6 +205,7 @@ void writeUnit(Out& o, const std::vector<float>& v, bool signedValues, bool wide
 }
 
 std::vector<float> readUnit(In& in, bool signedValues, bool wide) {
+    in.align4();
     std::vector<float> v(in.count(wide ? 2 : 1));
     for (auto& f : v) {
         if (wide) {
@@ -214,6 +222,7 @@ std::vector<float> readUnit(In& in, bool signedValues, bool wide) {
 // Positions as 16-bit values over each axis's own range: the count of floats, then the lowest and highest x, y and z (24 bytes), then
 // a u16 each.
 void writePositions(Out& o, const std::vector<float>& v) {
+    o.align4();
     o.u32(static_cast<std::uint32_t>(v.size()));
     if (v.empty()) {
         return;
@@ -241,6 +250,7 @@ void writePositions(Out& o, const std::vector<float>& v) {
 }
 
 std::vector<float> readPositions(In& in) {
+    in.align4();
     std::vector<float> v(in.count(2));
     if (v.empty()) {
         return v;
@@ -259,6 +269,7 @@ std::vector<float> readPositions(In& in) {
 }
 
 void writePrimitive(Out& o, const scene::Primitive& p) {
+    o.align4();
     o.i32(p.material);
     o.str(p.group);
     writePositions(o, p.positions);
@@ -268,10 +279,12 @@ void writePrimitive(Out& o, const scene::Primitive& p) {
     writeUnit(o, p.colors, false, false);
     writeUnit(o, p.lightUvs, false, true);
     writeUnit(o, p.weights, false, false);
+    o.align4();
     o.bytesList(p.joints);
     // Indices fit 16 bits for nearly everything.
     const bool wide = !p.positions.empty() && p.positions.size() / 3 > 65535;
-    o.flag(wide);
+    o.align4();
+    o.u32(wide ? 1 : 0);
     o.u32(static_cast<std::uint32_t>(p.indices.size()));
     for (const std::uint32_t i : p.indices) {
         if (wide) {
@@ -280,11 +293,13 @@ void writePrimitive(Out& o, const scene::Primitive& p) {
             o.u16(static_cast<std::uint16_t>(i));
         }
     }
+    o.align4();
     o.floats(p.origin);
 }
 
 scene::Primitive readPrimitive(In& in) {
     scene::Primitive p;
+    in.align4();
     p.material = in.i32();
     p.group = in.str();
     p.positions = readPositions(in);
@@ -294,12 +309,15 @@ scene::Primitive readPrimitive(In& in) {
     p.colors = readUnit(in, false, false);
     p.lightUvs = readUnit(in, false, true);
     p.weights = readUnit(in, false, false);
+    in.align4();
     p.joints = in.bytesList();
-    const bool wide = in.flag();
+    in.align4();
+    const bool wide = in.u32() != 0;
     p.indices.resize(in.count(wide ? 4 : 2));
     for (auto& i : p.indices) {
         i = wide ? in.u32() : in.u16();
     }
+    in.align4();
     p.origin = in.floats<3>();
     return p;
 }
@@ -354,6 +372,97 @@ scene::Instance readInstance(In& in) {
     x.lightSet = in.i32();
     x.partLightSets = in.intList();
     return x;
+}
+
+// The primitive with identical vertices (all of their data equal) made one, and the indices following. Meshes come with a vertex for each
+// corner of a face when the modeller left them unwelded; the console pays for a vertex every frame, a triangle's indices only once.
+scene::Primitive weldedPrimitive(const scene::Primitive& p) {
+    const std::size_t n = p.positions.size() / 3;
+    if (n == 0 || p.indices.empty()) {
+        return p;
+    }
+    struct Part {
+        const std::vector<float>* data;
+        std::size_t stride;
+    };
+    const Part floats[] = {{&p.positions, 3}, {&p.normals, 3}, {&p.uvs, 2}, {&p.alphas, 1}, {&p.colors, 3}, {&p.lightUvs, 2}, {&p.tangents, 3}, {&p.weights, 4}};
+    std::size_t stride = 0;
+    for (const Part& part : floats) {
+        stride += part.data->size() == n * part.stride ? part.stride : 0;
+    }
+    const bool joints = p.joints.size() == n * 4;
+    stride += joints ? 4 : 0;
+    std::vector<float> rows(n * stride);
+    for (std::size_t v = 0; v < n; ++v) {
+        float* row = &rows[v * stride];
+        for (const Part& part : floats) {
+            if (part.data->size() == n * part.stride) {
+                row = std::copy_n(part.data->begin() + static_cast<std::ptrdiff_t>(v * part.stride), part.stride, row);
+            }
+        }
+        if (joints) {
+            for (std::size_t j = 0; j < 4; ++j) {
+                *row++ = p.joints[v * 4 + j];
+            }
+        }
+    }
+    std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> buckets;
+    std::vector<std::uint32_t> remap(n);
+    std::vector<std::uint32_t> keep;
+    for (std::size_t v = 0; v < n; ++v) {
+        std::uint64_t h = 0xCBF29CE484222325ull;
+        const auto* words = reinterpret_cast<const std::uint32_t*>(&rows[v * stride]);
+        for (std::size_t k = 0; k < stride; ++k) {
+            h = (h ^ words[k]) * 0x100000001B3ull;
+        }
+        auto& bucket = buckets[h];
+        std::uint32_t found = 0xFFFFFFFFu;
+        for (const std::uint32_t other : bucket) {
+            if (std::memcmp(&rows[keep[other] * stride], &rows[v * stride], stride * sizeof(float)) == 0) {
+                found = other;
+                break;
+            }
+        }
+        if (found == 0xFFFFFFFFu) {
+            found = static_cast<std::uint32_t>(keep.size());
+            keep.push_back(static_cast<std::uint32_t>(v));
+            bucket.push_back(found);
+        }
+        remap[v] = found;
+    }
+    if (keep.size() == n) {
+        return p;
+    }
+    scene::Primitive q = p;
+    for (auto& i : q.indices) {
+        i = i < n ? remap[i] : i;
+    }
+    const auto gather = [&](const std::vector<float>& from, std::size_t perVertex) {
+        std::vector<float> out;
+        if (from.size() != n * perVertex) {
+            return from;
+        }
+        out.reserve(keep.size() * perVertex);
+        for (const std::uint32_t v : keep) {
+            out.insert(out.end(), from.begin() + static_cast<std::ptrdiff_t>(v * perVertex), from.begin() + static_cast<std::ptrdiff_t>((v + 1) * perVertex));
+        }
+        return out;
+    };
+    q.positions = gather(p.positions, 3);
+    q.normals = gather(p.normals, 3);
+    q.uvs = gather(p.uvs, 2);
+    q.alphas = gather(p.alphas, 1);
+    q.colors = gather(p.colors, 3);
+    q.lightUvs = gather(p.lightUvs, 2);
+    q.tangents = gather(p.tangents, 3);
+    q.weights = gather(p.weights, 4);
+    if (joints) {
+        q.joints.clear();
+        for (const std::uint32_t v : keep) {
+            q.joints.insert(q.joints.end(), p.joints.begin() + static_cast<std::ptrdiff_t>(v * 4), p.joints.begin() + static_cast<std::ptrdiff_t>(v * 4 + 4));
+        }
+    }
+    return q;
 }
 
 // The primitive with fewer triangles, its per-vertex data carried along to the vertices that are left.
@@ -475,11 +584,14 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
         o.str(mesh.name);
         o.u32(static_cast<std::uint32_t>(mesh.primitives.size()));
         for (const auto& original : mesh.primitives) {
-            const scene::Primitive p = options.meshKeep < 1 ? reducedPrimitive(original, options) : original;
+            const scene::Primitive welded = options.weld ? weldedPrimitive(original) : original;
+            const scene::Primitive p = options.meshKeep < 1 ? reducedPrimitive(welded, options) : welded;
             writePrimitive(o, p);
             ++st.primitives;
             st.trianglesBefore += original.indices.size() / 3;
             st.triangles += p.indices.size() / 3;
+            st.verticesBefore += original.positions.size() / 3;
+            st.vertices += p.positions.size() / 3;
         }
         o.u32(static_cast<std::uint32_t>(mesh.skin.size()));
         for (const auto& j : mesh.skin) {
@@ -526,9 +638,11 @@ namespace {
 // Reads the head from `in`, which stands just after the preamble; the images' offsets are made absolute with `imageArea`.
 // Reads the head's one primitive without expanding it: what a draw needs to know, and where its bytes end.
 void scanPrimitive(In& in, std::size_t base, BakedPrimitive& out) {
+    in.align4();
     const std::size_t start = in.position();
     out.material = in.i32();
     in.skip(in.count(1));  // the group's name
+    in.align4();
     const std::size_t floatsOfPositions = in.count(2);
     if (floatsOfPositions > 0) {
         float range[6];
@@ -543,23 +657,32 @@ void scanPrimitive(In& in, std::size_t base, BakedPrimitive& out) {
     }
     out.vertices = static_cast<std::uint32_t>(floatsOfPositions / 3);
     const std::size_t n = out.vertices;
+    in.align4();
     in.skip(in.count(1));  // normals
+    in.align4();
     if (const std::size_t uv = in.count(2); uv > 0) {
         in.skip(8 + uv * 2);
     }
+    in.align4();
     in.skip(in.count(1));  // alphas
+    in.align4();
     in.skip(in.count(1));  // colours
+    in.align4();
     const std::size_t lightUvs = in.count(2);
     in.skip(lightUvs * 2);
     out.lightMapped = n > 0 && lightUvs == n * 2;
+    in.align4();
     const std::size_t weights = in.count(1);
     in.skip(weights);
+    in.align4();
     const std::size_t joints = in.count(1);
     in.skip(joints);
     out.skinned = n > 0 && weights == n * 4 && joints == n * 4;
-    const bool wide = in.flag();
+    in.align4();
+    const bool wide = in.u32() != 0;
     out.indices = static_cast<std::uint32_t>(in.count(wide ? 4 : 2));
     in.skip(std::size_t{out.indices} * (wide ? 4 : 2));
+    in.align4();
     in.skip(12);  // the origin
     out.offset = base + start;
     out.size = in.position() - start;
@@ -654,6 +777,56 @@ scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& m
     meshes.bytes = std::move(head);
     In in(std::span<const std::uint8_t>(meshes.bytes).subspan(kBakedPreambleSize, size));
     return readHead(in, kBakedPreambleSize + size, &meshes, kBakedPreambleSize);
+}
+
+void viewPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, PrimitiveView& v) {
+    In in(std::span<const std::uint8_t>(meshes.bytes).subspan(primitive.offset, primitive.size));
+    v = PrimitiveView{};
+    in.align4();
+    in.skip(4);                 // the material
+    in.skip(in.count(1));       // the group's name
+    in.align4();
+    const std::size_t floatsOfPositions = in.count(2);
+    v.vertices = static_cast<std::uint32_t>(floatsOfPositions / 3);
+    if (floatsOfPositions > 0) {
+        for (int k = 0; k < 3; ++k) {
+            v.lo[k] = in.f32();
+            v.hi[k] = in.f32();
+        }
+        v.positions = reinterpret_cast<const std::uint16_t*>(in.here());
+        in.skip(floatsOfPositions * 2);
+    }
+    in.align4();
+    const std::size_t normals = in.count(1);
+    v.normals = normals == floatsOfPositions && normals > 0 ? reinterpret_cast<const std::int8_t*>(in.here()) : nullptr;
+    in.skip(normals);
+    in.align4();
+    if (const std::size_t uv = in.count(2); uv > 0) {
+        v.uvLo = in.f32();
+        v.uvHi = in.f32();
+        v.uvs = uv == std::size_t{v.vertices} * 2 ? reinterpret_cast<const std::uint16_t*>(in.here()) : nullptr;
+        in.skip(uv * 2);
+    }
+    in.align4();
+    const std::size_t alphas = in.count(1);
+    v.alphas = alphas == v.vertices && alphas > 0 ? in.here() : nullptr;
+    in.skip(alphas);
+    in.align4();
+    const std::size_t colors = in.count(1);
+    v.colors = colors == floatsOfPositions && colors > 0 ? in.here() : nullptr;
+    in.skip(colors);
+    in.align4();
+    const std::size_t lightUvs = in.count(2);
+    v.lightUvs = lightUvs == std::size_t{v.vertices} * 2 && lightUvs > 0 ? reinterpret_cast<const std::uint16_t*>(in.here()) : nullptr;
+    in.skip(lightUvs * 2);
+    in.align4();
+    in.skip(in.count(1));  // weights
+    in.align4();
+    in.skip(in.count(1));  // joints
+    in.align4();
+    v.wideIndices = in.u32() != 0;
+    v.indices = static_cast<std::uint32_t>(in.count(v.wideIndices ? 4 : 2));
+    v.indexData = in.here();
 }
 
 void expandPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, ExpandedPrimitive& out) {
