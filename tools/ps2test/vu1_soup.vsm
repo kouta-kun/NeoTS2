@@ -1,4 +1,4 @@
-; VU1 microprogram for triangle soup: three corners a triangle, no indices.
+; VU1 microprogram for triangle soup: three corners a triangle, no indices. See gs_renderer.cpp (drawListVu) for how it is fed.
 ;
 ; Per batch the VIF has unpacked, into the double buffer at TOP:
 ;   +0 .. +6   the GS state packet (a GIF tag for A+D, six register writes)
@@ -9,7 +9,9 @@
 ;   0 1 2  the clip-space matrix's columns, with the position's scale folded in; 3 the clip-space position of a zero position
 ;   4  the screen scale (x, y, z)  5 the screen offset (x, y, z)  6 the texture coordinates' scale  7 their offset
 ;   8  the guard-band scale of the clip test (1/3, 1/3, 1, 1)
-; The program turns each corner into what the GS takes in packed form (ST, RGBAQ, XYZ2) in place, then kicks the buffer.
+;   9  the facing test: x = 1 and y = 0 culls the faces that look away, x = 0 and y = 1 culls none
+; Each corner becomes what the GS takes in packed form (ST, RGBAQ, XYZ2) in place; a triangle whose corner is outside the guard band, or that looks away,
+; gets the ADC bit on its third vertex, which keeps the GS from drawing it. Then the buffer is kicked.
 		.vu
 		.align 4
 		.global	VU1Soup_CodeStart
@@ -24,6 +26,7 @@ VU1Soup_CodeStart:
          NOP                                        lq            VF07,6(VI00)
          NOP                                        lq            VF08,7(VI00)
          NOP                                        lq            VF09,8(VI00)
+         NOP                                        lq            VF10,9(VI00)
          NOP                                        xtop          VI02
          NOP                                        ilw.x         VI07,7(VI02)
          NOP                                        iaddiu        VI03,VI02,8
@@ -32,34 +35,89 @@ VU1Soup_CodeStart:
          NOP                                        NOP
          NOP                                        iand          VI07,VI07,VI08
          NOP                                        NOP
-cornerLoop:
-         NOP                                        lq            VF10,2(VI03)
-         NOP                                        lq            VF11,0(VI03)
-         itof0         VF10,VF10                    NOP
-         itof0.xy      VF11,VF11                    NOP
-         mulax         ACC,VF01,VF10x               NOP
-         madday        ACC,VF02,VF10y               NOP
-         maddaz        ACC,VF03,VF10z               NOP
-         maddw         VF12,VF04,VF00w              NOP
-         mul           VF13,VF12,VF09               NOP
-         mul.xy        VF14,VF11,VF07               NOP
-         clipw.xyz     VF13xyz,VF12w                div           Q,VF00w,VF12w
-         add.xy        VF14,VF14,VF08               NOP
-         addw.z        VF14,VF00,VF00w              NOP
+triangleLoop:
+         NOP                                        lq            VF11,2(VI03)
+         NOP                                        lq            VF12,0(VI03)
+         NOP                                        lq            VF18,5(VI03)
+         NOP                                        lq            VF19,3(VI03)
+         NOP                                        lq            VF25,8(VI03)
+         NOP                                        lq            VF26,6(VI03)
+         itof0         VF11,VF11                    NOP
+         itof0.xy      VF12,VF12                    NOP
+         itof0         VF18,VF18                    NOP
+         itof0.xy      VF19,VF19                    NOP
+         itof0         VF25,VF25                    NOP
+         itof0.xy      VF26,VF26                    NOP
+; corner A
+         mulax         ACC,VF01,VF11x               NOP
+         madday        ACC,VF02,VF11y               NOP
+         maddaz        ACC,VF03,VF11z               NOP
+         maddw         VF13,VF04,VF00w              NOP
+         mul           VF14,VF13,VF09               NOP
+         mul.xy        VF15,VF12,VF07               NOP
+         clipw.xyz     VF14xyz,VF13w                div           Q,VF00w,VF13w
+         add.xy        VF15,VF15,VF08               NOP
+         addw.z        VF15,VF00,VF00w              NOP
+; corner B (its matrix chain runs while A waits for the division)
+         mulax         ACC,VF01,VF18x               NOP
+         madday        ACC,VF02,VF18y               NOP
+         maddaz        ACC,VF03,VF18z               NOP
+         maddw         VF20,VF04,VF00w              NOP
+         mulq          VF15,VF15,Q                  NOP
+         mulq.xyz      VF16,VF13,Q                  NOP
+         mul.xyz       VF16,VF16,VF05               NOP
+         add.xyz       VF16,VF16,VF06               sq            VF15,0(VI03)
+         ftoi4.xy      VF17,VF16                    NOP
+         ftoi0.z       VF17,VF16                    NOP
+         mul           VF21,VF20,VF09               NOP
+         mul.xy        VF22,VF19,VF07               sq.xyz        VF17,2(VI03)
+         clipw.xyz     VF21xyz,VF20w                div           Q,VF00w,VF20w
+         add.xy        VF22,VF22,VF08               NOP
+         addw.z        VF22,VF00,VF00w              NOP
+; corner C
+         mulax         ACC,VF01,VF25x               NOP
+         madday        ACC,VF02,VF25y               NOP
+         maddaz        ACC,VF03,VF25z               NOP
+         maddw         VF27,VF04,VF00w              NOP
+         mulq          VF22,VF22,Q                  NOP
+         mulq.xyz      VF23,VF20,Q                  NOP
+         mul.xyz       VF23,VF23,VF05               NOP
+         add.xyz       VF23,VF23,VF06               sq            VF22,3(VI03)
+         ftoi4.xy      VF24,VF23                    NOP
+         ftoi0.z       VF24,VF23                    NOP
+         mul           VF28,VF27,VF09               NOP
+         mul.xy        VF29,VF26,VF07               sq.xyz        VF24,5(VI03)
+         clipw.xyz     VF28xyz,VF27w                div           Q,VF00w,VF27w
+         add.xy        VF29,VF29,VF08               NOP
+         addw.z        VF29,VF00,VF00w              NOP
          NOP                                        NOP
          NOP                                        NOP
-         mulq          VF14,VF14,Q                  fcand         VI01,262143
-         mulq.xyz      VF15,VF12,Q                  iaddiu        VI01,VI01,0x00007fff
-         mul.xyz       VF15,VF15,VF05               NOP
-         add.xyz       VF15,VF15,VF06               NOP
-         ftoi4.xy      VF16,VF15                    NOP
-         ftoi0.z       VF16,VF15                    sq            VF14,0(VI03)
-         NOP                                        sq.xyz        VF16,2(VI03)
-         NOP                                        isw.w         VI01,2(VI03)
-         NOP                                        iaddiu        VI03,VI03,3
-         NOP                                        isubiu        VI07,VI07,1
+         mulq          VF29,VF29,Q                  NOP
+         mulq.xyz      VF30,VF27,Q                  NOP
+         mul.xyz       VF30,VF30,VF05               NOP
+         add.xyz       VF30,VF30,VF06               sq            VF29,6(VI03)
+; which way the triangle faces: the cross product of two edges in screen space (the floats in VF16, VF23 and VF30)
+         sub.xy        VF14,VF23,VF16               NOP
+         sub.xy        VF21,VF30,VF16               NOP
+         ftoi4.xy      VF31,VF30                    NOP
+         ftoi0.z       VF31,VF30                    NOP
+         opmula.xyz    ACC,VF14,VF21                sq.xyz        VF31,8(VI03)
+         opmsub.xyz    VF11,VF21,VF14               NOP
+         mulx.z        VF11,VF11,VF10               NOP
+         suby.z        VF11,VF11,VF10               NOP
+         mulx.w        VF11,VF00,VF00               NOP
+         clipw.xyz     VF11xyz,VF11w                NOP
          NOP                                        NOP
-         NOP                                        ibne          VI07,VI00,cornerLoop
+         NOP                                        NOP
+         NOP                                        NOP
+         NOP                                        NOP
+         NOP                                        fcand         VI01,16777168
+         NOP                                        iaddiu        VI01,VI01,0x00007fff
+         NOP                                        isw.w         VI01,8(VI03)
+         NOP                                        iaddiu        VI03,VI03,9
+         NOP                                        isubiu        VI07,VI07,3
+         NOP                                        NOP
+         NOP                                        ibne          VI07,VI00,triangleLoop
          NOP                                        NOP
          NOP                                        xgkick        VI02
          NOP[E]                                     NOP

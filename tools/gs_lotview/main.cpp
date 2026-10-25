@@ -7,6 +7,7 @@
 #include <gsKit.h>
 #include <kernel.h>
 
+#include <cmath>
 #include <cstdio>
 #include <malloc.h>
 #include <cstdlib>
@@ -87,15 +88,23 @@ int main(int argc, char** argv) {
         ts2::render::Camera camera;
         const float cx = scene.lotSize[0] * 0.5f, cy = scene.lotSize[1] * 0.5f;
         camera.target = {cx, cy, 0};
-        camera.eye = {cx + scene.lotSize[0] * 0.9f, cy - scene.lotSize[1] * 0.9f, scene.lotSize[0] * 0.8f};
+        const float zoom = argc > 2 ? static_cast<float>(std::atof(argv[2])) : 1.0f;  // 1: the whole lot in view; smaller: closer
+        camera.eye = {cx + scene.lotSize[0] * 0.9f * zoom, cy - scene.lotSize[1] * 0.9f * zoom, scene.lotSize[0] * 0.8f * zoom};
         camera.farPlane = 400;
-        for (int frame = 0; frame < 3; ++frame) {
+        const float orbit = argc > 3 ? static_cast<float>(std::atof(argv[3])) : 0.0f;  // radians a frame the camera turns about the lot
+        const ts2::render::Vec3 eye0 = camera.eye;
+        for (int frame = 0; frame < 4; ++frame) {
+            if (orbit != 0) {
+                const float a = orbit * static_cast<float>(frame), c = std::cos(a), sn = std::sin(a);
+                camera.eye = {cx + (eye0[0] - cx) * c - (eye0[1] - cy) * sn, cy + (eye0[0] - cx) * sn + (eye0[1] - cy) * c, eye0[2]};
+            }
             if (!renderer.draw(camera)) {
                 break;
             }
             if (frame == 1) {
                 const auto& v = renderer.lastFrame();
                 std::printf("gs_lotview: vu: %zu batches, %zu corners; build %.2f s, send/wait %.2f s\n", v.vuBatches, v.vuCorners, v.vuBuild, v.vuWait);
+                std::printf("gs_lotview: primitives clipped by the EE: %zu, its corners %zu\n", renderer.lastFrame().clipped, renderer.lastFrame().eeCorners);
                 std::printf("gs_lotview: %zu vertices in the draws, lit colours: %zu kept, %zu worked out, cache %zu KiB\n", renderer.lastFrame().vertices,
                             renderer.lastFrame().litHits, renderer.lastFrame().litMisses, renderer.lastFrame().litCacheKiB);
                 const auto& s = renderer.lastFrame();

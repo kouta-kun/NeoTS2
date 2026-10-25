@@ -507,3 +507,17 @@ would give the textures about 2.5 MiB of VRAM instead of 0.75 MB. Format is vers
 
 N001 Lot 11, same camera: 17.9 s (EE only) -> 2.0 s (EE, cached colours) -> **0.33 s a frame** with VU1 (1.15 M corners, 9,858 batches, 3,295 draws, 276 texture uploads);
 EE build 0.12 s, lighting lookup 0.06, DMA waits 0.04 and the rest is PCSX2 running the VU1 and the GS. The remaining EE cost is per draw (uniforms, hashing, chain).
+
+**VU1 path, round two (2026-10-25).**
+- *Clipping:* each draw's box is tested against the frustum widened to the 3x guard band (`boxInView` on the matrix with x and y scaled by 1/3). Primitives that
+  cross it (near plane, far edges) are clipped and projected by the EE (Sutherland-Hodgman, as before), written as packed GS vertices and sent through the VIF behind a
+  `FLUSHA` (`DIRECT`), so they keep their place in the draw order; all the others go to the VU1. Lot 11 from far away: none take the EE path; with the camera at 30%
+  of the distance, 12 of 2,055 draws (20,529 corners) do, and the picture has no holes.
+- *Back-face culling:* the microprogram now works a triangle at a time (three corners, six loads up front) and tests the cross product of two screen-space edges
+  with a `CLIPW` (the sign of z against zero), then `FCAND` over the last four clip results: the guard test of the three corners and the facing. A culled or clipped
+  triangle gets the ADC bit on its third vertex, which keeps the GS from drawing it. A per-draw constant turns the test off for double-sided materials. (Checked by
+  inverting it once: only back faces were left.) PCSX2 does not model the VU's pipeline stalls, so the cycles per corner cannot be measured there; the program
+  is written in a plain order (about 36 FMAC and 8 lower-pipe instructions a corner): software pipelining is left until it can be measured on the console.
+- *Lit-colour cache:* the key is now generation counters (the renderer's setters bump a global count for lighting changes and a per-instance count for place,
+  materials and lights), not a hash of the uniforms; that hash covered the eye position, so a moving camera would have missed the cache on every draw. With the camera orbiting
+  the lot every frame, all 3,295 draws still hit the cache: 0.32 s a frame.

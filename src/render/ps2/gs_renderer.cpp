@@ -2,6 +2,7 @@
 
 #include "content/console_texture.hpp"
 #include "render/mesh_pack.hpp"
+#include "render/frame_plan.hpp"
 #include "render/texture_convert.hpp"
 #include "render/vertex_colors.hpp"
 
@@ -162,7 +163,7 @@ struct Soup {
 };
 
 struct GsRenderer::VuColors {
-    std::uint64_t hash = 0;
+    std::uint64_t generation = 0;  // the lighting's and the object's counts it was made with (see GsRenderer::touch)
     unsigned corners = 0;
     u8* rgba = nullptr;  // r, g, b, a/2 a corner, 16-byte aligned
     ~VuColors() { std::free(rgba); }
@@ -188,12 +189,14 @@ struct GsRenderer::VuSlot {
     Qw* upload = nullptr;        // the packets that upload a texture and its palette (see drawListVu)
     VifTag* chain = nullptr;
     std::size_t chainCapacity = 0;
+    std::vector<GsVertex> eeVertices;  // what the EE clipped and projected, in the GS's packed form
+    std::vector<Qw> eeTags;
     u8* scratch = nullptr;     // lit colours of a draw that is not kept
     std::size_t scratchCapacity = 0;
     VuSlot() {
         header = static_cast<Qw*>(memalign(64, 8 * sizeof(Qw)));
         tags = static_cast<Qw*>(memalign(64, 2 * sizeof(Qw)));
-        constants = static_cast<float*>(memalign(64, 9 * 16));
+        constants = static_cast<float*>(memalign(64, 10 * 16));
         upload = static_cast<Qw*>(memalign(64, 14 * sizeof(Qw)));
     }
     ~VuSlot() {
@@ -541,13 +544,6 @@ IRenderer::Prepared GsRenderer::swap(Prepared prepared) {
 
 namespace {
 
-std::uint64_t hashWords(const void* data, std::size_t bytes, std::uint64_t h = 0xCBF29CE484222325ull) {
-    const auto* w = static_cast<const std::uint32_t*>(data);
-    for (std::size_t i = 0; i < bytes / 4; ++i) {
-        h = (h ^ w[i]) * 0x100000001B3ull;
-    }
-    return h;
-}
 
 } // namespace
 
@@ -641,12 +637,12 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         double t0 = now();
         const u8* colours = nullptr;
         {
-            std::uint64_t hash = hashWords(reinterpret_cast<const std::uint8_t*>(&vu) + offsetof(VertexUniforms, model), sizeof vu - offsetof(VertexUniforms, model));
-            hash = hashWords(&fu, sizeof fu, hash);
-            const std::uint64_t key = (static_cast<std::uint64_t>(d.instance - instances_.data()) << 32) | p.firstVertex;
+            const auto instanceIndex = static_cast<std::size_t>(d.instance - instances_.data());
+            const std::uint64_t generation = lightGen_ * 0x9E3779B97F4A7C15ull + (instanceIndex < instanceGen_.size() ? instanceGen_[instanceIndex] : 0u);
+            const std::uint64_t key = (static_cast<std::uint64_t>(instanceIndex) << 32) | p.firstVertex;
             auto found = litVu_.find(key);
             frame_.vertices += corners;
-            if (found != litVu_.end() && found->second->hash == hash && found->second->corners == corners) {
+            if (found != litVu_.end() && found->second->generation == generation && found->second->corners == corners) {
                 colours = found->second->rgba;
                 ++frame_.litHits;
             } else {
@@ -659,7 +655,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                 std::unique_ptr<VuColors> keep;
                 if (litVuBytes_ + std::size_t{corners} * 4 <= litVuBudget_) {
                     keep = std::make_unique<VuColors>();
-                    keep->hash = hash;
+                    keep->generation = generation;
                     keep->corners = corners;
                     keep->rgba = static_cast<u8*>(memalign(16, std::size_t{corners} * 4));
                     destination = keep->rgba;
@@ -790,40 +786,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         slot.tags[0] = {giftag(kBatchCorners, 1, 1, prim, 0, 3), 0x512};
         slot.tags[1] = {giftag(remainder, 1, 1, prim, 0, 3), 0x512};
 
-        // The constants: the matrix with the positions' range folded in, and the screen, texture-coordinate and clip scales.
-        const Mat4 mvp = f.viewProjection * fromRows(vu.model);
-        const auto& r = mvp.m;
-        float* c = slot.constants;
-        for (int k = 0; k < 3; ++k) {
-            const float scale = (soup->hi[k] - soup->lo[k]) / 65535.0f;
-            for (int row = 0; row < 4; ++row) {
-                c[k * 4 + row] = r[static_cast<std::size_t>(row * 4 + k)] * scale;
-            }
-        }
-        for (int row = 0; row < 4; ++row) {
-            c[12 + row] = r[static_cast<std::size_t>(row * 4)] * soup->lo[0] + r[static_cast<std::size_t>(row * 4 + 1)] * soup->lo[1] +
-                          r[static_cast<std::size_t>(row * 4 + 2)] * soup->lo[2] + r[static_cast<std::size_t>(row * 4 + 3)];
-        }
-        const float halfW = static_cast<float>(gs_->Width) * 0.5f, halfH = static_cast<float>(gs_->Height) * 0.5f;
-        const float originX = static_cast<float>(gs_->OffsetX) / 16.0f, originY = static_cast<float>(gs_->OffsetY) / 16.0f;
-        const float uvScale = (soup->uvHi - soup->uvLo) / 65535.0f;
-        const float tables[5][4] = {{halfW, -halfH, kZScale, 0}, {originX + halfW, originY + halfH, 0, 0}, {uvScale, uvScale, 0, 0}, {soup->uvLo, soup->uvLo, 0, 0},
-                                    {1.0f / 3, 1.0f / 3, 1, 1}};
-        std::memcpy(&c[16], tables, sizeof tables);
-
-        // The chain: the constants, then for each batch the header and tag, the three arrays, and the start of the program.
-        const std::size_t tagCount = 8 + std::size_t{fullBatches + 1} * 6;
-        if (slot.chainCapacity < tagCount) {
-            std::free(slot.chain);
-            slot.chainCapacity = tagCount * 2;
-            slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
-        }
-        if (slot.chain == nullptr) {
-            slot.chainCapacity = 0;
-            continue;
-        }
-        unsigned t_ = 0;
-        VifTag* chain = slot.chain;
+        const auto addUpload = [&](VifTag* chain, unsigned& t_) {
         if (upload) {
             const auto direct = [](unsigned qw) { return vifCode(qw, 0, 0x50); };
             const GSTEXTURE& t = texture->tex;
@@ -852,7 +815,158 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             chain[t_++] = {dmaRef(&uq[12], 2), vifCode(0, 0, kVifNop), direct(2)};
             SyncDCache(uq, uq + 14);
         }
-        chain[t_++] = {dmaRef(slot.constants, 9), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, false), 9, kUnpackV4_32)};
+        };
+
+        // A primitive that crosses the guard band or the near plane is clipped and projected by the EE and sent through the VIF behind a FLUSHA (so
+        // after the draws before it); the rest, nearly all, go to the VU1 as they are.
+        const Mat4 mvp = f.viewProjection * fromRows(vu.model);
+        Mat4 guarded = mvp;
+        for (int k = 0; k < 8; ++k) {
+            guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
+        }
+        if (boxInView(guarded, p.low, p.high) != InView::Inside) {
+            const auto& r = mvp.m;
+            const float scale[3] = {(soup->hi[0] - soup->lo[0]) / 65535.0f, (soup->hi[1] - soup->lo[1]) / 65535.0f, (soup->hi[2] - soup->lo[2]) / 65535.0f};
+            const float uvScale = (soup->uvHi - soup->uvLo) / 65535.0f;
+            const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
+            const bool cull = !(m && m->doubleSided);
+            const auto corner = [&](unsigned c) {
+                const float ux = soup->lo[0] + scale[0] * soup->pos[c * 4], uy = soup->lo[1] + scale[1] * soup->pos[c * 4 + 1], uz = soup->lo[2] + scale[2] * soup->pos[c * 4 + 2];
+                ClipVertex v;
+                v.x = r[0] * ux + r[1] * uy + r[2] * uz + r[3];
+                v.y = r[4] * ux + r[5] * uy + r[6] * uz + r[7];
+                v.z = r[8] * ux + r[9] * uy + r[10] * uz + r[11];
+                v.w = r[12] * ux + r[13] * uy + r[14] * uz + r[15];
+                v.r = colours[c * 4];
+                v.g = colours[c * 4 + 1];
+                v.b = colours[c * 4 + 2];
+                v.a = colours[c * 4 + 3];
+                v.u = soup->uvLo + uvScale * soup->uv[c * 2];
+                v.v = soup->uvLo + uvScale * soup->uv[c * 2 + 1];
+                return v;
+            };
+            slot.eeVertices.clear();
+            for (unsigned c = 0; c + 2 < corners; c += 3) {
+                const ClipVertex in[3] = {corner(c), corner(c + 1), corner(c + 2)};
+                const unsigned codes = outcode(in[0]) & outcode(in[1]) & outcode(in[2]);
+                if (codes != 0) {
+                    continue;
+                }
+                ClipVertex poly[16];
+                int count = 3;
+                if ((outcode(in[0]) | outcode(in[1]) | outcode(in[2])) != 0) {
+                    count = clipPolygon(in, 3, poly);
+                } else {
+                    std::copy(in, in + 3, poly);
+                }
+                for (int i = 1; i + 1 < count; ++i) {
+                    GsVertex gv[3];
+                    float sx[3], sy[3];
+                    const ClipVertex* pick[3] = {&poly[0], &poly[i], &poly[i + 1]};
+                    for (int k = 0; k < 3; ++k) {
+                        const ClipVertex& cv = *pick[k];
+                        const float q = 1.0f / cv.w;
+                        sx[k] = (cv.x * q * 0.5f + 0.5f) * width;
+                        sy[k] = (0.5f - cv.y * q * 0.5f) * height;
+                        gv[k].s = cv.u * q;
+                        gv[k].t = cv.v * q;
+                        gv[k].q = q;
+                        gv[k].unused = 0;
+                        const auto byte = [](float x) { return static_cast<std::uint32_t>(std::clamp(x, 0.0f, 255.0f)); };
+                        gv[k].r = byte(cv.r);
+                        gv[k].g = byte(cv.g);
+                        gv[k].b = byte(cv.b);
+                        gv[k].a = byte(cv.a);
+                        gv[k].x = static_cast<std::uint32_t>(gsKit_float_to_int_x(gs_, sx[k]));
+                        gv[k].y = static_cast<std::uint32_t>(gsKit_float_to_int_y(gs_, sy[k]));
+                        gv[k].z = static_cast<std::uint32_t>(std::clamp(cv.z * q, 0.0f, 1.0f) * kZScale);
+                        gv[k].adc = 0;
+                    }
+                    if (cull && (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]) >= 0) {
+                        continue;
+                    }
+                    slot.eeVertices.insert(slot.eeVertices.end(), gv, gv + 3);
+                }
+            }
+            ++frame_.clipped;
+            frame_.eeCorners += slot.eeVertices.size();
+            constexpr std::size_t kChunkVertices = 9000;  // a GIF tag counts at most 32,767 loops
+            const std::size_t chunks = (slot.eeVertices.size() + kChunkVertices - 1) / kChunkVertices;
+            slot.eeTags.resize(std::max<std::size_t>(chunks, 1));
+            const std::size_t needed = 16 + chunks * 2;
+            if (slot.chainCapacity < needed) {
+                std::free(slot.chain);
+                slot.chainCapacity = needed * 2;
+                slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
+            }
+            if (slot.chain == nullptr) {
+                slot.chainCapacity = 0;
+                continue;
+            }
+            unsigned t_ = 0;
+            VifTag* chain = slot.chain;
+            addUpload(chain, t_);
+            const auto direct = [](unsigned qw) { return vifCode(qw, 0, 0x50); };
+            if (!slot.eeVertices.empty()) {
+                chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlusha)};
+                chain[t_++] = {dmaRef(header, 7), vifCode(0, 0, kVifNop), direct(7)};
+                for (std::size_t k = 0; k < chunks; ++k) {
+                    const std::size_t first = k * kChunkVertices, n = std::min(kChunkVertices, slot.eeVertices.size() - first);
+                    slot.eeTags[k] = {giftag(n, 1, 1, prim, 0, 3), 0x512};
+                    chain[t_++] = {dmaRef(&slot.eeTags[k], 1), vifCode(0, 0, kVifNop), direct(1)};
+                    chain[t_++] = {dmaRef(&slot.eeVertices[first], static_cast<unsigned>(n * 3)), vifCode(0, 0, kVifNop), direct(static_cast<unsigned>(n * 3))};
+                }
+                SyncDCache(slot.eeVertices.data(), slot.eeVertices.data() + slot.eeVertices.size());
+                SyncDCache(slot.eeTags.data(), slot.eeTags.data() + slot.eeTags.size());
+            }
+            chain[t_++] = {7ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifNop)};
+            SyncDCache(header, header + 8);
+            SyncDCache(chain, chain + t_);
+            frame_.vuBuild += now() - t0;
+            t0 = now();
+            dma_channel_wait(DMA_CHANNEL_VIF1, 0);
+            dma_channel_send_chain(DMA_CHANNEL_VIF1, chain, 0, DMA_FLAG_TRANSFERTAG, 0);
+            frame_.vuWait += now() - t0;
+            slot_ ^= 1;
+            continue;
+        }
+
+        // The constants: the matrix with the positions' range folded in, and the screen, texture-coordinate and clip scales.
+        const auto& r = mvp.m;
+        float* c = slot.constants;
+        for (int k = 0; k < 3; ++k) {
+            const float scale = (soup->hi[k] - soup->lo[k]) / 65535.0f;
+            for (int row = 0; row < 4; ++row) {
+                c[k * 4 + row] = r[static_cast<std::size_t>(row * 4 + k)] * scale;
+            }
+        }
+        for (int row = 0; row < 4; ++row) {
+            c[12 + row] = r[static_cast<std::size_t>(row * 4)] * soup->lo[0] + r[static_cast<std::size_t>(row * 4 + 1)] * soup->lo[1] +
+                          r[static_cast<std::size_t>(row * 4 + 2)] * soup->lo[2] + r[static_cast<std::size_t>(row * 4 + 3)];
+        }
+        const float halfW = static_cast<float>(gs_->Width) * 0.5f, halfH = static_cast<float>(gs_->Height) * 0.5f;
+        const float originX = static_cast<float>(gs_->OffsetX) / 16.0f, originY = static_cast<float>(gs_->OffsetY) / 16.0f;
+        const float uvScale = (soup->uvHi - soup->uvLo) / 65535.0f;
+        const bool cullBack = !(m && m->doubleSided);
+        const float tables[6][4] = {{halfW, -halfH, kZScale, 0}, {originX + halfW, originY + halfH, 0, 0}, {uvScale, uvScale, 0, 0}, {soup->uvLo, soup->uvLo, 0, 0},
+                                    {1.0f / 3, 1.0f / 3, 1, 1}, {cullBack ? 1.0f : 0.0f, cullBack ? 0.0f : 1.0f, 0, 0}};
+        std::memcpy(&c[16], tables, sizeof tables);
+
+        // The chain: the constants, then for each batch the header and tag, the three arrays, and the start of the program.
+        const std::size_t tagCount = 8 + std::size_t{fullBatches + 1} * 6;
+        if (slot.chainCapacity < tagCount) {
+            std::free(slot.chain);
+            slot.chainCapacity = tagCount * 2;
+            slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
+        }
+        if (slot.chain == nullptr) {
+            slot.chainCapacity = 0;
+            continue;
+        }
+        unsigned t_ = 0;
+        VifTag* chain = slot.chain;
+        addUpload(chain, t_);
+        chain[t_++] = {dmaRef(slot.constants, 10), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, false), 10, kUnpackV4_32)};
         for (unsigned b = 0; b <= fullBatches; ++b) {
             const unsigned n = b < fullBatches ? kBatchCorners : remainder;
             if (n == 0) {
@@ -871,7 +985,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         frame_.vuCorners += corners;
         SyncDCache(slot.header, slot.header + 8);
         SyncDCache(slot.tags, slot.tags + 2);
-        SyncDCache(slot.constants, slot.constants + 36);
+        SyncDCache(slot.constants, slot.constants + 40);
         SyncDCache(chain, chain + t_);
         frame_.vuBuild += now() - t0;
         t0 = now();

@@ -57,6 +57,17 @@ public:
     void setLightMapFade(float) override {}
     void setSkybox(const std::vector<scene::Image>&) override {}
 
+    // What changes the lit colours of an object: those that name it bump its own count, the others the count of all. A cached set of colours is kept
+    // while the counts it was made with are the counts now (the camera does not light anything, so moving it does not discard them).
+    void setPlace(std::size_t instance, const scene::Transform& transform) override { RendererState::setPlace(instance, transform); touch(instance); }
+    void setMaterials(std::size_t instance, std::vector<int> materials) override { RendererState::setMaterials(instance, std::move(materials)); touch(instance); }
+    void setInstance(const scene::Scene& scene, std::size_t index) override { RendererState::setInstance(scene, index); touch(index); }
+    void setLights(const scene::Scene& scene, std::size_t index) override { RendererState::setLights(scene, index); touch(index); }
+    void setImposterLight(const std::array<float, 3>& light) override { RendererState::setImposterLight(light); ++lightGen_; }
+    void setNight(bool night) override { RendererState::setNight(night); ++lightGen_; }
+    void setObjectLighting(std::optional<scene::ObjectLighting> lighting) override { RendererState::setObjectLighting(std::move(lighting)); ++lightGen_; }
+    void setHighlight(std::uint32_t object, float ambient) override { RendererState::setHighlight(object, ambient); ++lightGen_; }
+
     // Where a scene's images come from when `Image::console` is empty (see readBakedHead): called with the image when a draw first needs
     // it. At most `textureBudget` bytes of textures are kept in memory; the least recently drawn are let go, and read again if drawn.
     using ImageSource = std::function<std::vector<std::uint8_t>(const scene::Image&)>;
@@ -70,7 +81,7 @@ public:
         std::size_t draws = 0, triangles = 0, drawn = 0, culled = 0, clipped = 0, uploads = 0, textureBytes = 0;
         // Seconds spent in each part of the frame (wall clock; in an emulator only their proportions mean anything).
         std::size_t vertices = 0, litHits = 0, litMisses = 0, litCacheKiB = 0;
-        std::size_t vuBatches = 0, vuCorners = 0, vuWaits = 0;
+        std::size_t vuBatches = 0, vuCorners = 0, vuWaits = 0, eeCorners = 0;
         double vuBuild = 0, vuWait = 0;
         double collect = 0, expand = 0, light = 0, transform = 0, emit = 0, state = 0, submit = 0;
     };
@@ -120,6 +131,14 @@ private:
     struct VuColors;
     std::unique_ptr<VuSlot> slots_[2];
     std::unordered_map<std::uint64_t, std::unique_ptr<VuColors>> litVu_;
+    std::uint64_t lightGen_ = 1;
+    std::vector<std::uint32_t> instanceGen_;
+    void touch(std::size_t instance) {
+        if (instanceGen_.size() <= instance) {
+            instanceGen_.resize(instance + 1, 0);
+        }
+        ++instanceGen_[instance];
+    }
     std::size_t litVuBytes_ = 0, litVuBudget_ = 5 * 1024 * 1024;
     unsigned slot_ = 0;
     std::vector<float> rows_;  // vertex rows (see kVertexFloats) of a chunk being lit

@@ -8,7 +8,7 @@ display=${DISPLAY_FOR_PCSX2:-:0}; region=${GRAB_REGION:-800x600+0+0}
 ini=$HOME/.config/PCSX2/inis/PCSX2.ini; backup=$(mktemp)
 cp "$ini" "$backup"; trap 'cp "$backup" "$ini"; rm -f "$backup"; kill $pid 2>/dev/null' EXIT
 sed -i 's/^HostFs = .*/HostFs = true/' "$ini"
-DISPLAY=$display pcsx2-qt -batch -nogui -elf "$elf" > "$log" 2>&1 & pid=$!
+DISPLAY=$display pcsx2-qt -batch -nogui -elf "$elf" ${ELF_ARGS:+-gameargs "$ELF_ARGS"} > "$log" 2>&1 & pid=$!
 sleep "$wait_s"
 size=${region%%+*}; pos=${region#*+}; x=${pos%%+*}; y=${pos#*+}
 ffmpeg -loglevel error -y -f x11grab -video_size "$size" -i "$display+$x,$y" -frames:v 1 "$out"
