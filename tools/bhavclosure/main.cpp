@@ -125,6 +125,17 @@ int main(int argc, char** argv) {
                 c.allGroups.insert(t->group);
             }
         }
+        // Also every object type whose name starts "Social" (the objects Sims' interactions create at run time), with those the lot has.
+        std::set<std::uint32_t> socialGuids;
+        for (const std::uint32_t guid : code.objectTypeGuids()) {
+            if (const auto* t = code.objectType(guid); t && t->definition.name.rfind("Social", 0) == 0) {
+                socialGuids.insert(guid);
+            }
+        }
+        if (std::getenv("WITH_SOCIAL")) {
+            guids.insert(socialGuids.begin(), socialGuids.end());
+        }
+        std::printf("%zu object types named Social*\n", socialGuids.size());
         std::size_t types = 0, seeds = 0;
         std::vector<std::pair<std::uint32_t, std::uint16_t>> start;  // owner, tree
         for (const std::uint32_t guid : guids) {
