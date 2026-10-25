@@ -30,11 +30,48 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace {
+
+// --measure: what the simulation reads from the packages, by resource type, while the lot loads and while it ticks.
+struct Measure {
+    bool on = false;
+    int phase = 0;  // 0: loading, 1: ticking
+    struct Total {
+        std::size_t reads = 0, uniqueCount = 0, uniqueBytes = 0;
+    };
+    std::map<std::uint32_t, Total> byType[2];
+    std::set<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>> seen[2];
+    std::size_t entriesBytes = 0;
+    ~Measure() {
+        if (!on) {
+            return;
+        }
+        for (int ph = 0; ph < 2; ++ph) {
+            std::size_t count = 0, bytes = 0, reads = 0;
+            std::printf("\nreads while %s (distinct resources and their bytes, decompressed):\n  %-10s %8s %12s %8s\n", ph == 0 ? "the lot loads" : "the lot ticks", "type", "distinct",
+                        "bytes", "reads");
+            for (const auto& [type, t] : byType[ph]) {
+                std::printf("  0x%08x %8zu %12zu %8zu\n", type, t.uniqueCount, t.uniqueBytes, t.reads);
+                count += t.uniqueCount;
+                bytes += t.uniqueBytes;
+                reads += t.reads;
+            }
+            std::printf("  total      %8zu %12zu %8zu   (%.2f MiB)\n", count, bytes, reads, static_cast<double>(bytes) / 1048576.0);
+        }
+        std::size_t both = 0, bothBytes = 0;
+        std::set<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>> all = seen[0];
+        all.insert(seen[1].begin(), seen[1].end());
+        both = all.size();
+        std::printf("\nall distinct resources read: %zu\n", both);
+        (void)bothBytes;
+    }
+};
+Measure g_measure;
 
 using ts2::content::ResourceIndex;
 using ts2::sim::Outcome;
@@ -669,6 +706,7 @@ int runLot(ResourceIndex& index, const std::filesystem::path& install, const std
             });
             sim.markOnScreen(sims);
         }
+        g_measure.phase = 1;
         const std::size_t resetsBefore = sim.resets();
         sim.tick();
         if (sim.resets() != resetsBefore && motion) {
@@ -820,6 +858,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--measure") {
+            g_measure.on = true;
+            ResourceIndex::sharedObserver = [](const ResourceIndex::Resource& r, const std::vector<std::uint8_t>& bytes) {
+                const auto& k = r.entry.key;
+                auto& phase = g_measure.phase;
+                auto& t = g_measure.byType[phase][k.type];
+                ++t.reads;
+                if (g_measure.seen[phase].emplace(k.type, k.group, k.instance, k.instanceHigh).second) {
+                    ++t.uniqueCount;
+                    t.uniqueBytes += bytes.size();
+                }
+            };
+        }
+    }
     try {
         ResourceIndex index;
         loadSource(index, argv[1]);

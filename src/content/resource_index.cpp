@@ -47,6 +47,8 @@ std::vector<std::uint8_t> ResourceIndex::read(const Resource& resource) {
     std::vector<std::uint8_t> bytes = use(resource.package).read(resource.entry);
     if (observer) {
         observer(resource, bytes);
+    } else if (sharedObserver) {
+        sharedObserver(resource, bytes);
     }
     return bytes;
 }

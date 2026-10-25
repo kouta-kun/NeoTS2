@@ -36,6 +36,8 @@ public:
 
     // Called with each resource `read` returns (decompressed), for tools that gather what a scene needs.
     std::function<void(const Resource&, const std::vector<std::uint8_t>&)> observer;
+    // The same for every index that has no observer of its own (for tools that measure a whole program's reads, such as the simulation's).
+    static inline std::function<void(const Resource&, const std::vector<std::uint8_t>&)> sharedObserver;
 
     std::size_t packageCount() const { return packages_.size(); }
     const std::filesystem::path& packagePath(std::size_t package) const { return paths_[package]; }
