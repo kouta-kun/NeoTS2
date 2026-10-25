@@ -416,3 +416,18 @@ resources (96.8 -> 46.4 MiB) before any reduction.
 All-lots base bank, unique meshes (844k triangles, once each): `--mesh-keep 0.2 --mesh-error 0.1` leaves **42%** (58% removed),
 37-42 MiB of meshes. The owner accepted that setting for now (contact sheets of before/after for a sample were looked at; thin parts
 survive, soft curves get faceted). A stricter cap keeps more: 0.003 leaves 75%, 0.01 63%, 0.03 56%, no cap 45%.
+
+## gsKit backend: groundwork (2026-10-24)
+
+`tools/ps2test/gs_hello.cpp` draws one picture as 4-bit, 8-bit and 32-bit textures with `gsKit_prim_list_triangle_goraud_texture_uv_3d`
+(Gouraud, Z buffer on) and all three come out identical in PCSX2. Facts it settled:
+- The mode is gsKit's default, **640x448 interlaced, FIELD** (`GS_MODE_NTSC`, 16-bit signed Z, double buffered). Setting
+  `Interlace = GS_INTERLACED` with `Field = GS_FRAME` drew nothing, and non-interlaced with a 448 height stretched everything 2x.
+- A 4-bit texture's palette is 16 entries uploaded as an 8x2 CT32 block; an 8-bit one is 256 entries as 16x16, **with entries 8-15 and
+  16-23 of each 32 swapped** (the GS's CSM1 layout) before upload. Palette alpha is 0x80 for opaque; vertex colours 0x80 are 1.0.
+- UVs are 12.4 fixed point; positions go through `vertex_to_XYZ2` (it applies the screen offset).
+- Headless capture: `tools/ps2test/run_pcsx2.sh <elf> <seconds> <out.png>` runs PCSX2 on Xvfb (software renderer, llvmpipe adapter set
+  in PCSX2.ini and put back afterwards) and grabs the display with ffmpeg. The PCSX2 window shows the 640x448 picture at the top left.
+
+The renderer will be a `GsRenderer : RendererState` in `src/render/ps2/`, carrying out `FramePlan` with gsKit. The EE cannot build a lot
+scene itself (the builder peaks at 112 MiB), so a lot is baked by the converter into a console scene file and loaded as it is.
