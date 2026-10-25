@@ -11,6 +11,7 @@
 
 #include <malloc.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,16 +20,24 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
 
 extern "C" {
 volatile unsigned g_stage = 0;  // 100 once the lot is loaded, 200 + tick while ticking, 1000 when done, 900 after an exception
-char g_error[256] = {0};        // the exception's message
-volatile unsigned g_stops = 0, g_supportBytes = 0, g_checksum = 0, g_walkers = 0, g_supportMs = 0;
+char g_error[1024] = {0};        // the exception's message
+volatile unsigned g_oom = 0, g_oomSize = 0, g_terminate = 0, g_heapTick = 0, g_arenaTick = 0, g_stops = 0, g_supportBytes = 0, g_checksum = 0, g_walkers = 0, g_supportMs = 0;
 volatile unsigned g_loadMs = 0, g_ticksMs = 0, g_ticksDone = 0, g_tickMsMax = 0, g_heapLoaded = 0, g_heapAfter = 0;
 }
+
+#ifdef __PS2__
+#ifdef NEOTS2_PS2_DEBUG
+extern "C" void ts2StartPcSampler();
+extern "C" void ts2StartMonitor();
+#endif
+#endif
 
 namespace {
 
@@ -54,6 +63,25 @@ void parkOnConsole() {
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifdef __PS2__
+#ifdef NEOTS2_PS2_DEBUG
+    ts2StartPcSampler();
+    ts2StartMonitor();
+#endif
+#endif
+#ifdef __PS2__
+    // A failed allocation or an exception nobody caught would otherwise leave the console spinning with no trace: keep the cause where PINE reads it.
+    std::set_new_handler([] {
+        g_oom = 1;
+        parkOnConsole();
+        std::abort();
+    });
+    std::set_terminate([] {
+        g_terminate = 1;
+        parkOnConsole();
+        std::abort();
+    });
+#endif
 #ifdef __PS2__
     // Booted from a disc there are no arguments: the bank is on the disc.
     static char* discArgs[] = {const_cast<char*>("simmem"), const_cast<char*>("cdrom0:\\BANK"), const_cast<char*>("300")};
@@ -253,6 +281,8 @@ int main(int argc, char** argv) {
         const double ticking = now();
         for (std::size_t i = 0; i < ticks; ++i) {
             g_stage = 200 + static_cast<unsigned>(i);
+            g_heapTick = heapInUse();
+            g_arenaTick = static_cast<unsigned>(mallinfo().arena);
             const double t0 = now();
             simulation->tick();
             const auto ms = static_cast<unsigned>((now() - t0) * 1000);
@@ -261,8 +291,11 @@ int main(int argc, char** argv) {
             g_ticksMs = static_cast<unsigned>((now() - ticking) * 1000);
         }
         g_stops = static_cast<unsigned>(simulation->stops().size());
-        if (!simulation->stops().empty()) {
-            std::snprintf(g_error, sizeof g_error, "%s", simulation->stops().begin()->first.c_str());
+        std::size_t used = 0;
+        for (const auto& [why, stop] : simulation->stops()) {
+            std::printf("simmem: stop x%zu: %s\n", static_cast<std::size_t>(stop.count), why.c_str());
+            const int n = std::snprintf(g_error + used, sizeof g_error - used, "x%zu %s | ", static_cast<std::size_t>(stop.count), why.c_str());
+            used += n > 0 ? std::min(static_cast<std::size_t>(n), sizeof g_error - used - 1) : 0;
         }
         // A fingerprint of where everything ended up, to compare runs: the objects' places (in 1/65536 tiles) and how many Sims are walking.
         unsigned checksum = 0, walkers = 0;

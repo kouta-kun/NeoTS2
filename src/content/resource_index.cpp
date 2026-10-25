@@ -13,9 +13,9 @@ constexpr std::size_t kMaxOpenPackages = 16;
 } // namespace
 
 std::size_t ResourceIndex::addPackage(const std::filesystem::path& path,
-                                      std::optional<std::uint32_t> localGroup) {
+                                      std::optional<std::uint32_t> localGroup, bool inMemory) {
     constexpr std::uint32_t kLocalGroup = 0xFFFFFFFF;
-    auto package = std::make_unique<dbpf::Package>(path);
+    auto package = std::make_unique<dbpf::Package>(path, inMemory);
     const std::size_t packageIndex = packages_.size();
 
     byKey_.reserve(byKey_.size() + package->entries().size());
@@ -45,6 +45,9 @@ const ResourceIndex::Resource* ResourceIndex::find(const dbpf::ResourceKey& key)
 
 std::vector<std::uint8_t> ResourceIndex::read(const Resource& resource) {
     std::vector<std::uint8_t> bytes = use(resource.package).read(resource.entry);
+    if (Quiet::depth > 0) {
+        return bytes;
+    }
     if (observer) {
         observer(resource, bytes);
     } else if (sharedObserver) {

@@ -10,9 +10,12 @@
 #include "content/resource_index.hpp"
 #include "../../app/route_sources.hpp"
 #include "formats/dbpf_writer.hpp"
+#include "formats/neighborhood_id.hpp"
+#include "formats/qfs.hpp"
 #include "scene/animation_library.hpp"
 #include "scene/assets.hpp"
 #include "scene/outfit_properties.hpp"
+#include "sim/index_code_source.hpp"
 #include "sim/lot_simulation.hpp"
 #include "sim/support_table.hpp"
 
@@ -50,6 +53,13 @@ int main(int argc, char** argv) {
             }
             const auto& k = r.entry.key;
             gathered.try_emplace(Key{k.type, k.group, k.instance, k.instanceHigh}, bytes);
+        };
+        // The behaviours looked up by name (Run Tree by Name and the like), for the bank to answer without scanning.
+        ts2::sim::NameTable names;
+        ts2::sim::IndexCodeSource::nameObserver = [&](std::uint32_t group, const std::string& name, std::optional<std::uint16_t> found) {
+            if (found && recording) {
+                names.emplace(std::pair{group, name}, *found);
+            }
         };
         auto support = std::make_shared<ts2::sim::SupportTable>();
         {
@@ -155,6 +165,30 @@ int main(int argc, char** argv) {
             std::printf("simbank: fingerprint after %zu ticks: %08x, %u Sims walking\n", ticks, checksum, walkers);
         }
         ts2::content::ResourceIndex::sharedObserver = nullptr;
+        ts2::sim::IndexCodeSource::nameObserver = nullptr;
+        {
+            // The neighborhoods' identities, which the simulation otherwise finds by opening every neighborhood's packages.
+            std::uint32_t number = 0;
+            std::error_code ec;
+            for (const auto& folder : fs::directory_iterator(ts2::content::neighborhoodOfLot(lot).parent_path(), ec)) {
+                for (const auto& item : fs::directory_iterator(folder.path(), ec)) {
+                    if (item.path().extension() != ".package" || !item.is_regular_file(ec)) {
+                        continue;
+                    }
+                    try {
+                        ts2::dbpf::Package package{item.path()};
+                        for (const auto& e : package.entries()) {
+                            if (e.key.type == ts2::nhoodid::kType) {
+                                gathered.emplace(Key{ts2::nhoodid::kType, 0, number++, 0}, package.read(e));
+                                break;
+                            }
+                        }
+                    } catch (const std::exception&) {
+                    }
+                }
+            }
+        }
+        gathered.emplace(Key{ts2::sim::kNameTableType, 0, 0, 0}, ts2::sim::writeNameTable(names));
 
         const fs::path hood = ts2::content::neighborhoodOfLot(lot);
         const fs::path hoodOut = out / "Neighborhoods" / hood.filename();
@@ -163,12 +197,27 @@ int main(int argc, char** argv) {
             std::ofstream file(out / "code.package", std::ios::binary | std::ios::trunc);
             ts2::dbpf::PackageWriter writer(file);
             std::size_t bytes = 0;
+            std::size_t stored = 0, compressedCount = 0;
             for (const auto& [key, data] : gathered) {
-                writer.add({std::get<0>(key), std::get<1>(key), std::get<2>(key), std::get<3>(key)}, data, false, static_cast<std::uint32_t>(data.size()));
+                const ts2::dbpf::ResourceKey resourceKey{std::get<0>(key), std::get<1>(key), std::get<2>(key), std::get<3>(key)};
+                // Compressed when that saves space (the console keeps the whole package in memory), after checking it unpacks to the same bytes.
+                if (data.size() >= 64) {
+                    const auto packed = ts2::qfs::compress(data);
+                    if (packed.size() < data.size() && ts2::qfs::decompress(packed) == data) {
+                        writer.add(resourceKey, packed, true, static_cast<std::uint32_t>(data.size()));
+                        stored += packed.size();
+                        ++compressedCount;
+                        bytes += data.size();
+                        continue;
+                    }
+                }
+                writer.add(resourceKey, data, false, static_cast<std::uint32_t>(data.size()));
+                stored += data.size();
                 bytes += data.size();
             }
             writer.finish(0);
-            std::printf("code.package: %zu resources, %.2f MiB\n", gathered.size(), static_cast<double>(bytes) / 1048576.0);
+            std::printf("code.package: %zu resources, %.2f MiB (%.2f MiB stored, %zu compressed)\n", gathered.size(), static_cast<double>(bytes) / 1048576.0,
+                        static_cast<double>(stored) / 1048576.0, compressedCount);
         }
         {
             const auto bytes = ts2::sim::writeSupportTable(*support);

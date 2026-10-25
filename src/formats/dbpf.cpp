@@ -23,12 +23,24 @@ constexpr std::size_t kHeaderSize = 96;
 
 } // namespace
 
-Package::Package(const std::filesystem::path& path) : path_(path) {
+Package::Package(const std::filesystem::path& path, bool inMemory) : path_(path) {
     stream_ = openFile();
     // (the size comes from the stream: std::filesystem queries hang on the console's host filesystem)
     stream_->seekg(0, std::ios::end);
     fileSize_ = static_cast<std::uint64_t>(stream_->tellg());
     stream_->seekg(0, std::ios::beg);
+    if (inMemory) {
+        // In chunks: one read of a whole file can be more than the C library's file layer takes at once.
+        image_.resize(static_cast<std::size_t>(fileSize_));
+        constexpr std::size_t kChunk = 1 << 20;
+        for (std::size_t at = 0; at < image_.size(); at += kChunk) {
+            const std::size_t n = std::min(kChunk, image_.size() - at);
+            if (!stream_->read(reinterpret_cast<char*>(image_.data() + at), static_cast<std::streamsize>(n))) {
+                fail("read failed at offset " + std::to_string(at));
+            }
+        }
+        stream_.reset();
+    }
     load();
     stream_.reset();
 }
@@ -63,6 +75,10 @@ void Package::load() {
 std::vector<std::uint8_t> Package::readBytes(std::uint64_t offset, std::size_t size) {
     if (offset > fileSize_ || size > fileSize_ - offset) {
         fail("read lies outside the file");
+    }
+    if (!image_.empty()) {
+        const auto from = image_.begin() + static_cast<std::ptrdiff_t>(offset);
+        return std::vector<std::uint8_t>(from, from + static_cast<std::ptrdiff_t>(size));
     }
     if (!stream_) {
         stream_ = openFile();

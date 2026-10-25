@@ -100,7 +100,8 @@ struct Neighborhood {
     std::vector<std::string> problems;
 };
 
-Neighborhood loadNeighborhood(const std::filesystem::path& neighborhoodPackage);
+// `scanLots` lists the neighborhood's Lots folder for the lot numbers it holds (a bank, which runs where folders cannot be listed, leaves them out).
+Neighborhood loadNeighborhood(const std::filesystem::path& neighborhoodPackage, bool scanLots = true);
 
 // The identity of every neighborhood and sub-neighborhood in a Neighborhoods folder (the
 // packages directly in each neighborhood's folder), by id. The first of two with one id is kept.

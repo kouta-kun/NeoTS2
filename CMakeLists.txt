@@ -369,10 +369,20 @@ if(PS2)
     target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
     # The simulation alone, from a simbank folder, as a console program (see tools/simmem).
-    add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp)
+    add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp tools/ps2test/pthread_light.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image pthread)
     target_compile_options(simmem PRIVATE -fexceptions)
-    target_link_options(simmem PRIVATE -Wl,--wrap=_open)
+    # cdrom0: paths upper-cased (disc_paths.cpp), and mutexes that take no kernel semaphore (pthread_light.cpp: the kernel has a few hundred, and
+    # libstdc++ takes one for every shared_ptr here, which stopped the program after a few hundred).
+    target_link_options(simmem PRIVATE -Wl,--wrap=_open -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy -Wl,--wrap=pthread_mutex_lock
+        -Wl,--wrap=pthread_mutex_timedlock -Wl,--wrap=pthread_mutex_trylock -Wl,--wrap=pthread_mutex_unlock)
+    # The helpers that found where it stopped (see tools/ps2test/pc_sampler.cpp): where the program is, what its thread waits for, who makes semaphores.
+    option(NEOTS2_PS2_DEBUG "Link the console debugging helpers into simmem" OFF)
+    if(NEOTS2_PS2_DEBUG)
+        target_sources(simmem PRIVATE tools/ps2test/pc_sampler.cpp)
+        target_compile_definitions(simmem PRIVATE NEOTS2_PS2_DEBUG)
+        target_link_options(simmem PRIVATE -Wl,--wrap=CreateSema -Wl,--wrap=pte_osSemaphoreCreate)
+    endif()
 endif()
 
 # Only the libraries above, with no window, graphics, tools or tests: for cross-compiling the engine's core for a

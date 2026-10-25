@@ -28,7 +28,57 @@ std::uint64_t groupInstance(std::uint32_t group, std::uint16_t instance) {
 
 } // namespace
 
+std::vector<std::uint8_t> writeNameTable(const NameTable& names) {
+    std::vector<std::uint8_t> out;
+    const auto put32 = [&](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) {
+            out.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        }
+    };
+    put32(static_cast<std::uint32_t>(names.size()));
+    for (const auto& [key, instance] : names) {
+        put32(key.first);
+        out.push_back(static_cast<std::uint8_t>(instance));
+        out.push_back(static_cast<std::uint8_t>(instance >> 8));
+        out.push_back(static_cast<std::uint8_t>(key.second.size()));
+        out.insert(out.end(), key.second.begin(), key.second.end());
+    }
+    return out;
+}
+
+NameTable readNameTable(const std::vector<std::uint8_t>& bytes) {
+    NameTable names;
+    std::size_t at = 0;
+    const auto need = [&](std::size_t n) {
+        if (at + n > bytes.size()) {
+            throw std::runtime_error("name table: ends early");
+        }
+    };
+    need(4);
+    const std::uint32_t count = bytes[0] | bytes[1] << 8 | bytes[2] << 16 | static_cast<std::uint32_t>(bytes[3]) << 24;
+    at = 4;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        need(7);
+        const std::uint32_t group = bytes[at] | bytes[at + 1] << 8 | bytes[at + 2] << 16 | static_cast<std::uint32_t>(bytes[at + 3]) << 24;
+        const auto instance = static_cast<std::uint16_t>(bytes[at + 4] | bytes[at + 5] << 8);
+        const std::size_t length = bytes[at + 6];
+        at += 7;
+        need(length);
+        names.emplace(std::pair{group, std::string(bytes.begin() + static_cast<std::ptrdiff_t>(at), bytes.begin() + static_cast<std::ptrdiff_t>(at + length))}, instance);
+        at += length;
+    }
+    return names;
+}
+
 IndexCodeSource::IndexCodeSource(content::ResourceIndex& index) : index_(index) {
+    if (const auto* table = index_.find({kNameTableType, 0, 0, 0})) {
+        // A bank: its lookups by name were recorded, so nothing is scanned.
+        content::ResourceIndex::Quiet quiet;
+        for (const auto& [key, instance] : readNameTable(index_.read(*table))) {
+            behaviorNames_[key.first].emplace(key.second, instance);
+        }
+        behaviorNamesLoaded_ = true;
+    }
     for (const auto& r : index_.resources()) {
         if (r.entry.key.type != kSemiGlobalReference) {
             continue;
@@ -300,10 +350,15 @@ std::optional<std::uint16_t> IndexCodeSource::behaviorByName(std::uint32_t group
                 continue;
             }
             const auto bhavInstance = static_cast<std::uint16_t>(r.entry.key.instance);
-            auto code = behavior(r.entry.key.group, bhavInstance);
-            if (!code) {
+            // (parsed and let go: a group's worth of behaviours would otherwise stay in memory, and be taken for reads the simulation made)
+            std::optional<bhav::Behavior> parsed;
+            try {
+                content::ResourceIndex::Quiet quiet;
+                parsed = bhav::parse(index_.read(r));
+            } catch (const std::exception&) {
                 continue;
             }
+            const auto* code = &*parsed;
             auto& names = behaviorNames_[r.entry.key.group];
             const auto [it, inserted] = names.try_emplace(code->name, bhavInstance);
             if (!inserted && bhavInstance < it->second) {
@@ -311,15 +366,16 @@ std::optional<std::uint16_t> IndexCodeSource::behaviorByName(std::uint32_t group
             }
         }
     }
-    const auto group_it = behaviorNames_.find(group);
-    if (group_it == behaviorNames_.end()) {
-        return std::nullopt;
+    std::optional<std::uint16_t> found;
+    if (const auto group_it = behaviorNames_.find(group); group_it != behaviorNames_.end()) {
+        if (const auto it = group_it->second.find(name); it != group_it->second.end()) {
+            found = it->second;
+        }
     }
-    const auto it = group_it->second.find(name);
-    if (it == group_it->second.end()) {
-        return std::nullopt;
+    if (nameObserver) {
+        nameObserver(group, name, found);
     }
-    return it->second;
+    return found;
 }
 
 std::uint32_t IndexCodeSource::semiGlobalGroup(std::uint32_t objectGroup) {

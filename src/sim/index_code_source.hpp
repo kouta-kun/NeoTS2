@@ -3,15 +3,28 @@
 #include "content/resource_index.hpp"
 #include "sim/code_source.hpp"
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <tuple>
 #include <unordered_map>
+#include <vector>
 
 namespace ts2::sim {
 
+// A bank's table of the behaviours looked up by name: a resource of this type (group 0, instance 0) in the bank's code package, which lets
+// behaviorByName answer without reading every behaviour of a group to learn its name.
+constexpr std::uint32_t kNameTableType = 0x4E414D45;
+// Entries are (group, name) -> instance.
+using NameTable = std::map<std::pair<std::uint32_t, std::string>, std::uint16_t>;
+std::vector<std::uint8_t> writeNameTable(const NameTable& names);
+NameTable readNameTable(const std::vector<std::uint8_t>& bytes);
+
 class IndexCodeSource : public CodeSource {
 public:
+    // Called with each name lookup and its answer (for tools that gather a name table).
+    static inline std::function<void(std::uint32_t, const std::string&, std::optional<std::uint16_t>)> nameObserver;
+
     explicit IndexCodeSource(content::ResourceIndex& index);
 
     std::shared_ptr<const bhav::Behavior> behavior(std::uint32_t group,

@@ -91,13 +91,13 @@ fs::path neighborhoodPackage(const fs::path& neighborhood) {
     return neighborhood / (neighborhood.filename().string() + "_Neighborhood.package");
 }
 
-Neighborhood loadNeighborhood(const fs::path& neighborhoodPackage) {
+Neighborhood loadNeighborhood(const fs::path& neighborhoodPackage, bool scanLots) {
     dbpf::Package package{neighborhoodPackage};
     Neighborhood hood;
     const fs::path lots = neighborhoodPackage.parent_path() / "Lots";
     const std::string prefix = neighborhoodPackage.parent_path().filename().string() + "_Lot";
     std::error_code ec;
-    for (fs::directory_iterator it(lots, ec), end; it != end; it.increment(ec)) {
+    for (fs::directory_iterator it = scanLots ? fs::directory_iterator(lots, ec) : fs::directory_iterator(), end; it != end; it.increment(ec)) {
         // A file name the system can't convert to text is not a lot, so it is skipped.
         try {
             const std::string stem = it->path().stem().string();

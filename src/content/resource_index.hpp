@@ -26,8 +26,9 @@ public:
 
     // Resources in group 0xFFFFFFFF belong to the package itself (character files use it). With
     // `localGroup` they are indexed under that group instead.
+    // With `inMemory` the file is read into memory whole, in one sequential read, and served from there (for discs, where seeking is slow).
     std::size_t addPackage(const std::filesystem::path& path,
-                           std::optional<std::uint32_t> localGroup = std::nullopt);
+                           std::optional<std::uint32_t> localGroup = std::nullopt, bool inMemory = false);
 
     const std::vector<Resource>& resources() const { return resources_; }
     const Resource* find(const dbpf::ResourceKey& key) const;
@@ -38,6 +39,15 @@ public:
     std::function<void(const Resource&, const std::vector<std::uint8_t>&)> observer;
     // The same for every index that has no observer of its own (for tools that measure a whole program's reads, such as the simulation's).
     static inline std::function<void(const Resource&, const std::vector<std::uint8_t>&)> sharedObserver;
+
+    // While one of these lives, reads do not reach the observers (for lookups that read resources only to find something out).
+    struct Quiet {
+        Quiet() { ++depth; }
+        ~Quiet() { --depth; }
+        Quiet(const Quiet&) = delete;
+        Quiet& operator=(const Quiet&) = delete;
+        static inline int depth = 0;
+    };
 
     std::size_t packageCount() const { return packages_.size(); }
     const std::filesystem::path& packagePath(std::size_t package) const { return paths_[package]; }

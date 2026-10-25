@@ -53,7 +53,8 @@ struct IndexEntry {
 
 class Package {
 public:
-    explicit Package(const std::filesystem::path& path);
+    // `inMemory` reads the whole file once and serves every read from memory (the file is then never opened again).
+    explicit Package(const std::filesystem::path& path, bool inMemory = false);
     explicit Package(std::span<const std::uint8_t> bytes);
 
     const Header& header() const { return header_; }
@@ -76,6 +77,7 @@ private:
 
     std::filesystem::path path_;
     std::unique_ptr<std::istream> stream_;
+    std::vector<std::uint8_t> image_;  // the whole file, when it was read into memory
     std::uintmax_t fileSize_ = 0;
     Header header_;
     std::vector<IndexEntry> entries_;

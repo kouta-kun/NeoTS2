@@ -8,6 +8,7 @@
 #include "content/wants.hpp"
 #include "diag/log.hpp"
 #include "diag/timing.hpp"
+#include "formats/neighborhood_id.hpp"
 #include "formats/resource_types.hpp"
 #include "sim/lua_runtime.hpp"
 #include "sim/object_reset.hpp"
@@ -60,10 +61,23 @@ std::shared_ptr<LuaRuntime> loadScripts(const std::filesystem::path& install, Co
 
 } // namespace
 
+// The neighborhoods' identities a bank carries (simbank gathers them, as they are otherwise found by opening every neighborhood's package).
+std::map<std::int32_t, nhoodid::NeighborhoodId> bankNeighborhoodIds(content::ResourceIndex& index) {
+    std::map<std::int32_t, nhoodid::NeighborhoodId> out;
+    content::ResourceIndex::Quiet quiet;
+    for (const auto& r : index.resources()) {
+        if (r.entry.key.type == nhoodid::kType) {
+            auto record = nhoodid::parse(index.read(r));
+            out.try_emplace(record.id, std::move(record));
+        }
+    }
+    return out;
+}
+
 content::ResourceIndex loadPackages(const std::vector<std::filesystem::path>& packages) {
     content::ResourceIndex index;
     for (const auto& path : packages) {
-        index.addPackage(path);
+        index.addPackage(path, std::nullopt, true);  // a bank is read whole, in one go
     }
     return index;
 }
@@ -85,7 +99,6 @@ LotSimulation::LotSimulation(const std::vector<std::filesystem::path>& packages,
 
 void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem::path* install, std::optional<std::filesystem::path> wants,
                          std::optional<std::filesystem::path> wantTuning, std::function<void(const StepInfo&)> onLoadStep) {
-    // (read first: on the PCSX2 console, opening files after the heavy reads below fails)
     std::shared_ptr<content::WantDefinitions> wantDefs;
     if (wants) {
         wantDefs = std::make_shared<content::WantDefinitions>(content::loadWantDefinitions(*wants));
@@ -119,9 +132,10 @@ void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem
     updateTimeOfDay(vm_.globals);
     const auto hood = content::neighborhoodPackage(content::neighborhoodOfLot(lot));
     if (std::ifstream(hood, std::ios::binary).good()) {  // not std::filesystem::exists: on the PlayStation 2 its stat call stopped the program here (see docs/ps2-port-plan.md)
-        const content::Neighborhood loaded = content::loadNeighborhood(hood);
+        const content::Neighborhood loaded = content::loadNeighborhood(hood, install != nullptr);
         findHousehold(loaded, lot);
-        world_.setNeighborhood(savedNeighborhood(loaded, content::neighborhoodIds(content::neighborhoodOfLot(lot).parent_path())));
+        world_.setNeighborhood(savedNeighborhood(
+            loaded, install ? content::neighborhoodIds(content::neighborhoodOfLot(lot).parent_path()) : bankNeighborhoodIds(index_)));
         // Global 0x28, the current neighborhood's id, is what scripts ask NeighborhoodManager about.
         constexpr std::size_t kCurrentNeighborhoodGlobal = 0x28;
         if (loaded.identity && kCurrentNeighborhoodGlobal < vm_.globals.size()) {
