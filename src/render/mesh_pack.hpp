@@ -51,6 +51,9 @@ struct MeshData {
     bool tooBig = false;  // some primitives were left out (a buffer's size is 32-bit)
 };
 
+// One primitive's vertices in the layout of kVertexFloats floats each, into `out` (which has room for them).
+void packPrimitiveVertices(const scene::Primitive& p, float* out);
+
 // Makes room in `data` for all the meshes from index `first` on, so that packing them doesn't grow its arrays again and
 // again (each growth holds the old array and the new together, which at a lot's size is the peak of its load).
 void reserveMeshData(const std::vector<scene::Mesh>& meshes, std::size_t first, MeshData& data);

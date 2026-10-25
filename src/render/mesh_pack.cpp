@@ -26,6 +26,35 @@ void reserveMeshData(const std::vector<scene::Mesh>& meshes, std::size_t first, 
     data.skin.reserve(data.skin.size() + skinned * kSkinBytes);
 }
 
+void packPrimitiveVertices(const scene::Primitive& p, float* out) {
+    const std::size_t n = p.positions.size() / 3;
+    for (std::size_t i = 0; i < n; ++i) {
+        float* v = out + i * kVertexFloats;
+        std::fill_n(v, kVertexFloats, 0.0f);
+        std::copy_n(&p.positions[i * 3], 3, v);
+        if (p.normals.size() == p.positions.size()) {
+            std::copy_n(&p.normals[i * 3], 3, v + 3);
+        } else {
+            v[5] = 1;
+        }
+        if (p.uvs.size() == n * 2) {
+            std::copy_n(&p.uvs[i * 2], 2, v + 6);
+        }
+        v[8] = p.alphas.size() == n ? p.alphas[i] : 1.0f;
+        if (p.lightUvs.size() == n * 2) {
+            std::copy_n(&p.lightUvs[i * 2], 2, v + 9);
+        }
+        if (p.colors.size() == n * 3) {
+            std::copy_n(&p.colors[i * 3], 3, v + 11);
+        } else {
+            std::fill_n(v + 11, 3, 1.0f);
+        }
+        if (p.tangents.size() == n * 3) {
+            std::copy_n(&p.tangents[i * 3], 3, v + 14);
+        }
+    }
+}
+
 GpuMesh packMesh(const scene::Mesh& mesh, std::size_t materials, std::uint32_t buffers, MeshData& data) {
     GpuMesh gm;
     for (const auto& p : mesh.primitives) {
@@ -51,30 +80,7 @@ GpuMesh packMesh(const scene::Mesh& mesh, std::size_t materials, std::uint32_t b
         g.firstVertex = static_cast<std::uint32_t>(data.vertices.size() / kVertexFloats);
         g.firstIndex = static_cast<std::uint32_t>(data.indices.size());
         data.vertices.resize(data.vertices.size() + n * kVertexFloats, 0.0f);
-        for (std::size_t i = 0; i < n; ++i) {
-            float* v = &data.vertices[(g.firstVertex + i) * kVertexFloats];
-            std::copy_n(&p.positions[i * 3], 3, v);
-            if (p.normals.size() == p.positions.size()) {
-                std::copy_n(&p.normals[i * 3], 3, v + 3);
-            } else {
-                v[5] = 1;
-            }
-            if (p.uvs.size() == n * 2) {
-                std::copy_n(&p.uvs[i * 2], 2, v + 6);
-            }
-            v[8] = p.alphas.size() == n ? p.alphas[i] : 1.0f;
-            if (p.lightUvs.size() == n * 2) {
-                std::copy_n(&p.lightUvs[i * 2], 2, v + 9);
-            }
-            if (p.colors.size() == n * 3) {
-                std::copy_n(&p.colors[i * 3], 3, v + 11);
-            } else {
-                std::fill_n(v + 11, 3, 1.0f);
-            }
-            if (p.tangents.size() == n * 3) {
-                std::copy_n(&p.tangents[i * 3], 3, v + 14);
-            }
-        }
+        packPrimitiveVertices(p, &data.vertices[std::size_t{g.firstVertex} * kVertexFloats]);
         data.indices.insert(data.indices.end(), p.indices.begin(), p.indices.end());
         g.count = static_cast<unsigned>(p.indices.size());
         g.vertices = static_cast<unsigned>(n);

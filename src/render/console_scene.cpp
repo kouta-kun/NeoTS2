@@ -13,7 +13,7 @@ namespace ts2::render {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x31435343;  // "CSC1"
-constexpr std::uint32_t kVersion = 3;
+constexpr std::uint32_t kVersion = 4;
 
 class Out {
 public:
@@ -65,6 +65,13 @@ public:
         std::memcpy(p, data_.data() + pos_, n);
         pos_ += n;
     }
+    void skip(std::size_t n) {
+        if (n > data_.size() - pos_) {
+            throw std::runtime_error("baked scene: truncated");
+        }
+        pos_ += n;
+    }
+    std::size_t position() const { return pos_; }
 
 private:
     std::span<const std::uint8_t> data_;
@@ -204,10 +211,57 @@ std::vector<float> readUnit(In& in, bool signedValues, bool wide) {
     return v;
 }
 
+// Positions as 16-bit values over each axis's own range: the count of floats, then the lowest and highest x, y and z (24 bytes), then
+// a u16 each.
+void writePositions(Out& o, const std::vector<float>& v) {
+    o.u32(static_cast<std::uint32_t>(v.size()));
+    if (v.empty()) {
+        return;
+    }
+    float lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = hi[k] = v[static_cast<std::size_t>(k)];
+    }
+    for (std::size_t i = 0; i + 2 < v.size(); i += 3) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], v[i + k]);
+            hi[k] = std::max(hi[k], v[i + k]);
+        }
+    }
+    for (int k = 0; k < 3; ++k) {
+        o.f32(lo[k]);
+        o.f32(hi[k]);
+    }
+    for (std::size_t i = 0; i + 2 < v.size(); i += 3) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float range = hi[k] - lo[k];
+            o.u16(range > 0 ? static_cast<std::uint16_t>(std::lround((v[i + k] - lo[k]) / range * 65535.0f)) : 0);
+        }
+    }
+}
+
+std::vector<float> readPositions(In& in) {
+    std::vector<float> v(in.count(2));
+    if (v.empty()) {
+        return v;
+    }
+    float lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = in.f32();
+        hi[k] = in.f32();
+    }
+    for (std::size_t i = 0; i + 2 < v.size(); i += 3) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            v[i + k] = lo[k] + (hi[k] - lo[k]) * (static_cast<float>(in.u16()) / 65535.0f);
+        }
+    }
+    return v;
+}
+
 void writePrimitive(Out& o, const scene::Primitive& p) {
     o.i32(p.material);
     o.str(p.group);
-    writeQuantized(o, p.positions);
+    writePositions(o, p.positions);
     writeUnit(o, p.normals, true, false);
     writeQuantized(o, p.uvs);
     writeUnit(o, p.alphas, false, false);
@@ -233,7 +287,7 @@ scene::Primitive readPrimitive(In& in) {
     scene::Primitive p;
     p.material = in.i32();
     p.group = in.str();
-    p.positions = readQuantized(in);
+    p.positions = readPositions(in);
     p.normals = readUnit(in, true, false);
     p.uvs = readQuantized(in);
     p.alphas = readUnit(in, false, false);
@@ -453,6 +507,8 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
         std::memcpy(&o.bytes[imageTable + i * 16], fields, 16);
         at += static_cast<std::uint32_t>((blobs[i].size() + 15) / 16 * 16);
     }
+    // The images start on a 16-byte boundary of the file: the head is padded to end on one.
+    o.bytes.resize(o.bytes.size() + (16 - (kBakedPreambleSize + o.bytes.size()) % 16) % 16, 0);
     std::vector<std::uint8_t> file;
     const std::uint32_t preamble[3] = {kMagic, kVersion, static_cast<std::uint32_t>(o.bytes.size())};
     file.resize(kBakedPreambleSize);
@@ -468,7 +524,48 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
 namespace {
 
 // Reads the head from `in`, which stands just after the preamble; the images' offsets are made absolute with `imageArea`.
-scene::Scene readHead(In& in, std::uint64_t imageArea) {
+// Reads the head's one primitive without expanding it: what a draw needs to know, and where its bytes end.
+void scanPrimitive(In& in, std::size_t base, BakedPrimitive& out) {
+    const std::size_t start = in.position();
+    out.material = in.i32();
+    in.skip(in.count(1));  // the group's name
+    const std::size_t floatsOfPositions = in.count(2);
+    if (floatsOfPositions > 0) {
+        float range[6];
+        for (auto& r : range) {
+            r = in.f32();
+        }
+        for (std::size_t k = 0; k < 3; ++k) {
+            out.low[k] = range[k * 2];
+            out.high[k] = range[k * 2 + 1];
+        }
+        in.skip(floatsOfPositions * 2);
+    }
+    out.vertices = static_cast<std::uint32_t>(floatsOfPositions / 3);
+    const std::size_t n = out.vertices;
+    in.skip(in.count(1));  // normals
+    if (const std::size_t uv = in.count(2); uv > 0) {
+        in.skip(8 + uv * 2);
+    }
+    in.skip(in.count(1));  // alphas
+    in.skip(in.count(1));  // colours
+    const std::size_t lightUvs = in.count(2);
+    in.skip(lightUvs * 2);
+    out.lightMapped = n > 0 && lightUvs == n * 2;
+    const std::size_t weights = in.count(1);
+    in.skip(weights);
+    const std::size_t joints = in.count(1);
+    in.skip(joints);
+    out.skinned = n > 0 && weights == n * 4 && joints == n * 4;
+    const bool wide = in.flag();
+    out.indices = static_cast<std::uint32_t>(in.count(wide ? 4 : 2));
+    in.skip(std::size_t{out.indices} * (wide ? 4 : 2));
+    in.skip(12);  // the origin
+    out.offset = base + start;
+    out.size = in.position() - start;
+}
+
+scene::Scene readHead(In& in, std::uint64_t imageArea, BakedMeshes* compact = nullptr, std::size_t base = 0) {
     scene::Scene s;
     if (in.flag()) s.objectLighting = readLighting(in);
     s.lightSets.resize(in.count(40));
@@ -491,11 +588,24 @@ scene::Scene readHead(In& in, std::uint64_t imageArea) {
     }
     s.materials.resize(in.count(40));
     for (auto& m : s.materials) m = readMaterial(in);
-    s.meshes.resize(in.count(8));
-    for (auto& mesh : s.meshes) {
+    const std::size_t meshCount = in.count(8);
+    if (compact) {
+        compact->meshes.resize(meshCount);
+    } else {
+        s.meshes.resize(meshCount);
+    }
+    for (std::size_t m = 0; m < meshCount; ++m) {
+        scene::Mesh scratch;
+        scene::Mesh& mesh = compact ? scratch : s.meshes[m];
         mesh.name = in.str();
-        mesh.primitives.resize(in.count(20));
-        for (auto& p : mesh.primitives) p = readPrimitive(in);
+        const std::size_t primitives = in.count(20);
+        if (compact) {
+            compact->meshes[m].resize(primitives);
+            for (auto& p : compact->meshes[m]) scanPrimitive(in, base, p);
+        } else {
+            mesh.primitives.resize(primitives);
+            for (auto& p : mesh.primitives) p = readPrimitive(in);
+        }
         mesh.skin.resize(in.count(100));
         for (auto& j : mesh.skin) {
             j.joint = in.str();
@@ -534,6 +644,25 @@ scene::Scene readBakedHead(std::span<const std::uint8_t> head) {
     }
     In in(head.subspan(kBakedPreambleSize, size));
     return readHead(in, kBakedPreambleSize + size);
+}
+
+scene::Scene readBakedHeadCompact(std::vector<std::uint8_t> head, BakedMeshes& meshes) {
+    const std::uint32_t size = checkedHeadSize(head);
+    if (head.size() < kBakedPreambleSize + size) {
+        throw std::runtime_error("baked scene: head truncated");
+    }
+    meshes.bytes = std::move(head);
+    In in(std::span<const std::uint8_t>(meshes.bytes).subspan(kBakedPreambleSize, size));
+    return readHead(in, kBakedPreambleSize + size, &meshes, kBakedPreambleSize);
+}
+
+void expandPrimitive(const BakedMeshes& meshes, const BakedPrimitive& primitive, ExpandedPrimitive& out) {
+    In in(std::span<const std::uint8_t>(meshes.bytes).subspan(primitive.offset, primitive.size));
+    const scene::Primitive p = readPrimitive(in);
+    const std::size_t n = p.positions.size() / 3;
+    out.vertices.resize(n * kVertexFloats);
+    packPrimitiveVertices(p, out.vertices.data());
+    out.indices = p.indices;
 }
 
 scene::Scene readBakedScene(std::span<const std::uint8_t> bytes) {

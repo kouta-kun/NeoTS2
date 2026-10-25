@@ -3,6 +3,7 @@
 // the way to do that fast; see docs/ps2-port-plan.md). Only built for the console.
 #pragma once
 
+#include "render/console_scene.hpp"
 #include "render/frame_plan.hpp"
 #include "render/shared_state.hpp"
 
@@ -25,6 +26,9 @@ public:
 
     [[nodiscard]] Capabilities capabilities() const override;
     [[nodiscard]] Prepared prepare(const scene::Scene& scene) const override;
+    // A baked scene read with readBakedHeadCompact: its meshes stay as bytes and are expanded when drawn, so they take no more memory
+    // than the file. `scene` is what that returned, `meshes` what it filled.
+    [[nodiscard]] Prepared prepareBaked(scene::Scene scene, BakedMeshes meshes) const;
     void upload(Prepared prepared) override { (void)swap(std::move(prepared)); }
     [[nodiscard]] Prepared swap(Prepared prepared) override;
     [[nodiscard]] bool uploaded() override { return true; }
@@ -79,6 +83,7 @@ private:
     GSGLOBAL* gs_;
     std::unique_ptr<Gpu> gpu_;
     std::vector<std::uint8_t> litColors_;
+    ExpandedPrimitive expanded_;
     FrameStats frame_;
 };
 

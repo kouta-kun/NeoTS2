@@ -8,9 +8,17 @@
 #include <kernel.h>
 
 #include <cstdio>
+#include <malloc.h>
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
+
+// What the heap holds and how far it has grown, to see where a 32 MB machine runs out.
+static void memory(const char* where) {
+    const struct mallinfo m = mallinfo();
+    std::printf("gs_lotview: memory %-22s in use %6.2f MiB, free in heap %6.2f MiB, heap %6.2f MiB\n", where, m.uordblks / 1048576.0, m.fordblks / 1048576.0,
+                m.arena / 1048576.0);
+}
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -27,6 +35,17 @@ int main(int argc, char** argv) {
     gsKit_init_screen(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
 
+    {
+        // How much can be allocated in all: take 1 MiB blocks until there are none (and give them back).
+        std::vector<void*> blocks;
+        while (void* b = std::malloc(1 << 20)) {
+            blocks.push_back(b);
+        }
+        std::printf("gs_lotview: the heap holds %zu MiB in all\n", blocks.size());
+        for (void* b : blocks) {
+            std::free(b);
+        }
+    }
     std::FILE* file = std::fopen(path, "rb");
     if (!file) {
         std::printf("gs_lotview: cannot open %s\n", path);
@@ -42,9 +61,11 @@ int main(int argc, char** argv) {
             head.size() - ts2::render::kBakedPreambleSize) {
             throw std::runtime_error("short read of the head");
         }
-        ts2::scene::Scene scene = ts2::render::readBakedHead(head);
-        head = {};
-        std::printf("gs_lotview: head read: %zu images, %zu meshes, %zu instances\n", scene.images.size(), scene.meshes.size(), scene.instances.size());
+        memory("before the head");
+        ts2::render::BakedMeshes meshes;
+        ts2::scene::Scene scene = ts2::render::readBakedHeadCompact(std::move(head), meshes);
+        memory("head read");
+        std::printf("gs_lotview: head read: %zu images, %zu meshes, %zu instances\n", scene.images.size(), meshes.meshes.size(), scene.instances.size());
         ts2::render::GsRenderer renderer(gs);
         renderer.setImageSource(
             [file](const ts2::scene::Image& image) {
@@ -55,7 +76,11 @@ int main(int argc, char** argv) {
                 return blob;
             },
             6 * 1024 * 1024);
-        renderer.upload(renderer.prepare(scene));
+        memory("renderer made");
+        auto prepared = renderer.prepareBaked(scene, std::move(meshes));
+        memory("scene prepared");
+        renderer.upload(std::move(prepared));
+        memory("uploaded");
         std::printf("gs_lotview: uploaded\n");
         ts2::render::Camera camera;
         const float cx = scene.lotSize[0] * 0.5f, cy = scene.lotSize[1] * 0.5f;

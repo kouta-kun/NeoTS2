@@ -461,3 +461,17 @@ textures 16.5 unchanged: the converter's 256 cap and 4-bit palettes; the console
 PCSX2 on the GPU session (`:0`): PCSX2 segfaults while opening its render window there (in every renderer and with or without
 `-nogui`), almost certainly in its XRandR refresh-rate probe, because that Xorg has no connected output (`xrandr` lists only
 disconnected ports). It needs an output (a dummy plug, or an Xorg `ConnectedMonitor` option) to work there.
+
+### N001 Lot 11 on the console (2026-10-25, PCSX2 with its hardware renderer, `:0` made usable by forcing an HDMI output)
+
+The whole lot draws: house, roof, trees, fences, road, kerbs, 331 images (4/8/32-bit, read from disc on demand). What it took:
+- The console heap is **27 MiB** in all (probed). Keeping the head's meshes as floats needed 14.7 MiB before any draw buffer and ran out.
+  Now each primitive stays as its quantised bytes inside the head (`readBakedHeadCompact`, `BakedMeshes`) and one primitive at a time is
+  expanded to the 17-float layout when drawn: **7.2 MiB in use** with the scene prepared, 13.9 MiB of textures resident at the end
+  (budget 6 MiB is only enforced for textures not drawn in the last two frames; this lot draws more than that every frame).
+- Positions are quantised per axis (so the culling box needs no decoding), the image area starts on a 16-byte boundary.
+- **Speed: about 17.7 s a frame in PCSX2** for 3,295 draws and 381k triangles considered, 205k drawn, 177k back-face culled. That is
+  the EE doing lighting (`vertexColors`, eight lights a vertex), transform, clip and packet building for every vertex of every draw, every
+  frame, plus expanding each primitive's bytes. It is far too slow whatever the exact ratio between PCSX2 and a real console. Next:
+  profile the phases; cache or bake the vertex lighting (it does not change with the camera); cull at instance level; move transform
+  to VU1.

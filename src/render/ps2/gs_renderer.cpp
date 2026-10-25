@@ -122,6 +122,9 @@ struct GsTexture {
 struct GsRenderer::Gpu {
     std::vector<GpuMesh> meshes;
     MeshData data;
+    bool baked = false;                              // meshes are expanded from `bakedMeshes` when drawn (see prepareBaked)
+    BakedMeshes bakedMeshes;
+    std::vector<const BakedPrimitive*> refs;         // by GpuPrimitive::firstVertex
     std::vector<std::unique_ptr<GsTexture>> textures;  // by the scene's image index, null for none (or not read yet)
     std::vector<scene::Image> sources;                 // where each image is, for reading it when it is first drawn
     std::vector<std::size_t> lastUsed;                 // per image: the frame it was last drawn in
@@ -328,6 +331,67 @@ IRenderer::Prepared GsRenderer::prepare(const scene::Scene& scene) const {
     return Prepared(std::move(p));
 }
 
+IRenderer::Prepared GsRenderer::prepareBaked(scene::Scene scene, BakedMeshes meshes) const {
+    auto p = std::make_unique<GpuPrepared>();
+    p->gs = gs_;
+    p->gpu = std::make_unique<Gpu>();
+    Gpu& g = *p->gpu;
+    g.baked = true;
+    g.bakedMeshes = std::move(meshes);
+    const auto finite = [](const std::array<float, 3>& a) { return std::isfinite(a[0]) && std::isfinite(a[1]) && std::isfinite(a[2]); };
+    for (const auto& primitives : g.bakedMeshes.meshes) {
+        GpuMesh gm;
+        for (std::size_t k = 0; k < primitives.size(); ++k) {
+            const BakedPrimitive& b = primitives[k];
+            if (b.vertices == 0 || b.indices == 0) {
+                continue;
+            }
+            GpuPrimitive gp;
+            gp.firstVertex = static_cast<std::uint32_t>(g.refs.size());
+            g.refs.push_back(&b);
+            gp.count = b.indices;
+            gp.vertices = b.vertices;
+            gp.material = b.material >= 0 && static_cast<std::size_t>(b.material) < scene.materials.size() ? b.material : -1;
+            gp.lightMapped = b.lightMapped;
+            gp.skinned = b.skinned;
+            gp.source = k;
+            gp.low = b.low;
+            gp.high = b.high;
+            gp.hasBox = finite(gp.low) && finite(gp.high);
+            gp.cullable = !gp.skinned && gp.hasBox;
+            if (gp.cullable) {
+                for (std::size_t a = 0; a < 3; ++a) {
+                    gm.low[a] = gm.anyCullable ? std::min(gm.low[a], gp.low[a]) : gp.low[a];
+                    gm.high[a] = gm.anyCullable ? std::max(gm.high[a], gp.high[a]) : gp.high[a];
+                }
+                gm.anyCullable = true;
+            }
+            gm.primitives.push_back(gp);
+        }
+        g.meshes.push_back(std::move(gm));
+    }
+    g.textures.resize(scene.images.size());
+    g.lastUsed.assign(scene.images.size(), 0);
+    g.bytes.assign(scene.images.size(), 0);
+    for (const scene::Image& image : scene.images) {
+        scene::Image info;
+        info.width = image.width;
+        info.height = image.height;
+        info.consoleOffset = image.consoleOffset;
+        info.consoleSize = image.consoleSize;
+        g.sources.push_back(std::move(info));
+    }
+    for (const scene::Instance& instance : scene.instances) {
+        if (instance.lightMap >= 0 && static_cast<std::size_t>(instance.lightMap) < scene.images.size() && !g.lightImages.contains(instance.lightMap) &&
+            !scene.images[static_cast<std::size_t>(instance.lightMap)].console.empty()) {
+            g.lightImages[instance.lightMap] =
+                decodeConsoleTexture(content::ConsoleTexture::parse(scene.images[static_cast<std::size_t>(instance.lightMap)].console));
+        }
+    }
+    copyScene(*p, scene);
+    return Prepared(std::move(p));
+}
+
 IRenderer::Prepared GsRenderer::swap(Prepared prepared) {
     if (!prepared.get()) {
         prepared = Prepared(std::make_unique<GpuPrepared>());
@@ -348,7 +412,7 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
     // What the GS was last told, so a draw that changes nothing sends nothing.
     for (const Draw& d : list) {
         const GpuPrimitive& p = *d.primitive;
-        if (p.skinned || gpu_->data.vertices.empty()) {
+        if (p.skinned || (!gpu_->baked && gpu_->data.vertices.empty())) {
             continue;
         }
         const scene::Material* m = d.material;
@@ -357,7 +421,16 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
         const FragmentUniforms& fu = u.fragment;
         ++frame_.draws;
 
-        const float* vertices = &gpu_->data.vertices[static_cast<std::size_t>(p.firstVertex) * kVertexFloats];
+        const float* vertices = nullptr;
+        const std::uint32_t* indices = nullptr;
+        if (gpu_->baked) {
+            expandPrimitive(gpu_->bakedMeshes, *gpu_->refs[p.firstVertex], expanded_);
+            vertices = expanded_.vertices.data();
+            indices = expanded_.indices.data();
+        } else {
+            vertices = &gpu_->data.vertices[static_cast<std::size_t>(p.firstVertex) * kVertexFloats];
+            indices = &gpu_->data.indices[p.firstIndex];
+        }
         const scene::Image* lightImage = nullptr;
         const bool lightMapped = fu.lightMap[0] > 0;
         if (lightMapped) {
@@ -422,7 +495,6 @@ void GsRenderer::drawList(const FrameView& f, const std::vector<Draw>& list, int
         ad(gs_, GS_SETREG_ZBUF_1(gs_->ZBuffer / 8192, gs_->PSMZ, blended ? 1 : 0), GS_ZBUF_1);
 
         // Triangles, clipped and culled.
-        const std::uint32_t* indices = &gpu_->data.indices[p.firstIndex];
         const bool cull = !(m && m->doubleSided);
         const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
         packet.clear();

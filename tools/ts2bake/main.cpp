@@ -60,7 +60,44 @@ int main(int argc, char** argv) {
         std::printf("read back: %zu images, %zu materials, %zu meshes, %zu instances: %s (%.1f s)\n", back.images.size(), back.materials.size(),
                     back.meshes.size(), back.instances.size(), same ? "same counts" : "COUNTS DIFFER",
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
-        return same ? 0 : 1;
+        // The compact form (what the console reads) must expand to what the full read gives, primitive by primitive.
+        ts2::render::BakedMeshes compact;
+        std::vector<std::uint8_t> head(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(ts2::render::bakedHeadSize(bytes)));
+        const ts2::scene::Scene shell = ts2::render::readBakedHeadCompact(std::move(head), compact);
+        std::size_t checked = 0, wrong = 0;
+        ts2::render::ExpandedPrimitive expanded;
+        std::vector<float> reference;
+        for (std::size_t m = 0; m < back.meshes.size() && m < compact.meshes.size(); ++m) {
+            for (std::size_t k = 0; k < back.meshes[m].primitives.size() && k < compact.meshes[m].size(); ++k) {
+                const auto& full = back.meshes[m].primitives[k];
+                ts2::render::expandPrimitive(compact, compact.meshes[m][k], expanded);
+                reference.resize(full.positions.size() / 3 * ts2::render::kVertexFloats);
+                ts2::render::packPrimitiveVertices(full, reference.data());
+                ++checked;
+                if (expanded.vertices != reference || expanded.indices != full.indices || compact.meshes[m][k].vertices != full.positions.size() / 3 ||
+                    compact.meshes[m][k].indices != full.indices.size()) {
+                    ++wrong;
+                }
+            }
+        }
+        // Each image must sit where the head says, on a 16-byte boundary, and parse as a console texture.
+        std::size_t badImages = 0;
+        for (const auto& image : shell.images) {
+            if (image.consoleOffset % 16 != 0 || image.consoleOffset + image.consoleSize > bytes.size()) {
+                ++badImages;
+                continue;
+            }
+            try {
+                const auto view = ts2::content::ConsoleTextureView::of(std::span<const std::uint8_t>(bytes).subspan(image.consoleOffset, image.consoleSize));
+                badImages += view.width != image.width || view.height != image.height;
+            } catch (const std::exception&) {
+                ++badImages;
+            }
+        }
+        std::printf("images in the file: %zu checked, %zu wrong\n", shell.images.size(), badImages);
+        std::printf("compact read: %zu meshes, %zu primitives checked, %zu differ; scene part holds %zu meshes (should be 0)\n", compact.meshes.size(), checked,
+                    wrong, shell.meshes.size());
+        return same && wrong == 0 && badImages == 0 && compact.meshes.size() == back.meshes.size() ? 0 : 1;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "failed: %s\n", e.what());
         return 1;
