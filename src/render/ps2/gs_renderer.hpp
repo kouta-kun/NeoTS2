@@ -44,6 +44,9 @@ public:
     [[nodiscard]] bool uploaded() override { return true; }
     void setSprites(const std::vector<std::pair<int, const scene::Image*>>&) override {}
     [[nodiscard]] bool draw(const Camera& camera) override;
+    // Reads the textures the next draw from `camera` will need (each is read when first drawn otherwise, all of them inside that one draw): `progress` is called
+    // with how many are in and how many there are. Returns how many.
+    std::size_t preload(const Camera& camera, const std::function<void(std::size_t, std::size_t)>& progress);
     [[nodiscard]] bool drawToFile(const Camera&, unsigned, unsigned, const std::filesystem::path&) override { return false; }
     [[nodiscard]] std::optional<scene::Image> drawInstancesToImage(const Camera&, unsigned, unsigned, const scene::ObjectLighting&) override {
         return std::nullopt;

@@ -965,6 +965,35 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
     }
 }
 
+std::size_t GsRenderer::preload(const Camera& camera, const std::function<void(std::size_t, std::size_t)>& progress) {
+    if (!drawScene_ || !gpu_) {
+        return 0;
+    }
+    Camera view = camera;
+    view.nearPlane = kNearPlane;
+    const FrameView f = FrameView::make(view, gs_->Width, gs_->Height);
+    std::vector<Draw> opaque, layers, blended;
+    FramePlan::collectDraws(*this, *this, f, opaque, layers, blended);
+    std::vector<int> images;
+    for (const auto* list : {&opaque, &layers, &blended}) {
+        for (const Draw& d : *list) {
+            if (d.material && d.material->image >= 0) {
+                images.push_back(d.material->image);
+            }
+        }
+    }
+    std::sort(images.begin(), images.end());
+    images.erase(std::unique(images.begin(), images.end()), images.end());
+    std::size_t done = 0;
+    for (const int image : images) {
+        textureFor(image);
+        if (progress) {
+            progress(++done, images.size());
+        }
+    }
+    return images.size();
+}
+
 bool GsRenderer::draw(const Camera& camera) {
     frame_ = {};
     ++frameNumber_;

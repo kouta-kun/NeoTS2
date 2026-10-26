@@ -412,6 +412,22 @@ int runConsoleLot(int argc, char** argv) {
                             static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1})));
             }
             renderer.show(std::move(visible));
+            if (frame == 0) {
+                // The textures of the first frame, one read after another from the scene file (over a network, each a round trip): now, with the count showing, and not inside the draw.
+                const std::uint64_t t0 = ts2::platform::ticksNs();
+                std::uint64_t shown = t0;
+                static char text[48];
+                const std::size_t count = renderer.preload(orbit.camera(), [&](std::size_t done, std::size_t total) {
+                    const std::uint64_t now = ts2::platform::ticksNs();
+                    if (done == 1 || done == total || now - shown >= 500000000ull) {
+                        shown = now;
+                        std::snprintf(text, sizeof text, "reading texture %zu of %zu", done, total);
+                        std::printf("neots2: %s (%.1f s)\n", text, static_cast<double>(now - t0) / 1e9);
+                        loadingScreen(0.95f, text);
+                    }
+                });
+                std::printf("neots2: %zu textures read in %.1f s\n", count, static_cast<double>(ts2::platform::ticksNs() - t0) / 1e9);
+            }
             CONSOLE_STAGE(16);
             if (frame == 2) {
                 const auto cam = orbit.camera();
