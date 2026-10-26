@@ -25,6 +25,9 @@ ConsoleLife::ConsoleLife(std::unique_ptr<ts2::sim::LotSimulation> sim, const ts2
 void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRenderer& renderer) {
     using ts2::sim::LotSimulation;
     constexpr double tickMs = LotSimulation::kNormalTickMs;
+    if (!sim_) {
+        return;
+    }
     pendingMs_ = std::min(pendingMs_ + ms, kMaxTicksPerUpdate * tickMs);
     bool ticked = false;
     while (pendingMs_ >= tickMs) {
@@ -51,6 +54,9 @@ void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRend
 }
 
 std::string ConsoleLife::clockText() {
+    if (!sim_) {
+        return "no simulation";
+    }
     return ts2::sim::clockText(sim_->globals());
 }
 

@@ -369,6 +369,8 @@ if(PS2)
     target_link_directories(gs_lotview PRIVATE $ENV{PS2DEV}/gsKit/lib)
     target_link_libraries(gs_lotview PRIVATE ts2gs ts2renderplan ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad)
     target_compile_options(gs_lotview PRIVATE -fexceptions)
+    # Two files do not compile at -Os with this compiler (an internal error in mesh_decimate, wrong code in rig_layers): they stay at -O3.
+    set_source_files_properties(src/content/mesh_decimate.cpp src/scene/rig_layers.cpp PROPERTIES COMPILE_OPTIONS -O3)
     # NeoTS2 itself on the console: app/main.cpp starts the console's lot mode (app/console_lot.cpp) when built for it.
     add_executable(neots2 app/main.cpp app/console_lot.cpp app/console_life.cpp src/platform/ps2/platform_ps2.cpp src/platform/time.cpp
                    tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp tools/ps2test/pthread_light.cpp)
@@ -377,6 +379,7 @@ if(PS2)
     target_compile_options(neots2 PRIVATE -fexceptions)
     target_link_options(neots2 PRIVATE -Wl,--wrap=_open -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy -Wl,--wrap=pthread_mutex_lock
         -Wl,--wrap=pthread_mutex_timedlock -Wl,--wrap=pthread_mutex_trylock -Wl,--wrap=pthread_mutex_unlock)
+    # (the debugging helpers are linked when NEOTS2_PS2_DEBUG is on: see below, with simmem's)
     # The simulation alone, from a simbank folder, as a console program (see tools/simmem).
     add_executable(simmem tools/simmem/main.cpp tools/ps2test/atomics_shim.cpp tools/ps2test/disc_paths.cpp tools/ps2test/pthread_light.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image pthread)
@@ -390,7 +393,19 @@ if(PS2)
     if(NEOTS2_PS2_DEBUG)
         target_sources(simmem PRIVATE tools/ps2test/pc_sampler.cpp)
         target_compile_definitions(simmem PRIVATE NEOTS2_PS2_DEBUG)
-        target_link_options(simmem PRIVATE -Wl,--wrap=CreateSema -Wl,--wrap=pte_osSemaphoreCreate)
+        target_link_options(simmem PRIVATE -Wl,--wrap=CreateSema -Wl,--wrap=pte_osSemaphoreCreate -Wl,--wrap=sceSifCallRpc -Wl,--wrap=abort -Wl,--wrap=_exit)
+        # With NEOTS2_PS2_TRACE as well, the routing code records the functions it enters (tools/ps2test/trace_hooks.cpp).
+        option(NEOTS2_PS2_TRACE "Trace the routing code's functions in simmem and neots2 (needs NEOTS2_PS2_DEBUG)" OFF)
+        if(NEOTS2_PS2_TRACE)
+            target_sources(simmem PRIVATE tools/ps2test/trace_hooks.cpp)
+            target_sources(neots2 PRIVATE tools/ps2test/trace_hooks.cpp)
+            set_source_files_properties(src/sim/vm_routing.cpp src/sim/route_goals.cpp src/sim/route_grid.cpp src/sim/route_items.cpp src/sim/route_portals.cpp
+                src/sim/route_search.cpp src/sim/route_world.cpp src/sim/vm_route_blocked.cpp src/sim/walk_path.cpp src/sim/walk_plan.cpp src/sim/walk_sweep.cpp
+                src/sim/path_passes.cpp src/sim/turn.cpp PROPERTIES COMPILE_OPTIONS -finstrument-functions)
+        endif()
+        target_sources(neots2 PRIVATE tools/ps2test/pc_sampler.cpp)
+        target_compile_definitions(neots2 PRIVATE NEOTS2_PS2_DEBUG)
+        target_link_options(neots2 PRIVATE -Wl,--wrap=CreateSema -Wl,--wrap=pte_osSemaphoreCreate -Wl,--wrap=sceSifCallRpc -Wl,--wrap=abort -Wl,--wrap=_exit)
     endif()
 endif()
 

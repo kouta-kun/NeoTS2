@@ -9,6 +9,7 @@
 #include "render/ps2/gs_renderer.hpp"
 #include "scene/view.hpp"
 #include "sim/lot_simulation.hpp"
+#include "sim/route_grid.hpp"
 #include "sim/support_table.hpp"
 
 #include <dmaKit.h>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <new>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -32,9 +34,14 @@
 
 // Where the program is and what stopped it, for tools/ps2test/pine_sym.sh (a log line can be lost on the console; memory can be read).
 extern "C" {
-volatile unsigned g_consoleStopAt = 0, g_consoleStage = 0, g_consoleFrame = 0, g_consoleTicks = 0, g_consoleHeap = 0;
+volatile unsigned g_oomArena = 0, g_oomUsed = 0, g_oomFree = 0, g_oomLargest = 0, g_oomStage = 0, g_consoleStopAt = 0, g_consoleStage = 0, g_consoleFrame = 0, g_consoleTicks = 0, g_consoleHeap = 0;
 char g_consoleError[256] = {0};
 }
+
+#ifdef NEOTS2_PS2_DEBUG
+extern "C" void ts2StartPcSampler();
+extern "C" void ts2StartMonitor();
+#endif
 
 // Stops the program here when asked to (the third argument), with its memory intact, to read the globals above.
 #define CONSOLE_STAGE(n) \
@@ -54,6 +61,26 @@ namespace {
 void memory(const char* where) {
     const struct mallinfo m = mallinfo();
     std::printf("neots2: memory %-24s in use %6.2f MiB, heap %6.2f MiB\n", where, m.uordblks / 1048576.0, m.arena / 1048576.0);
+}
+
+// What the app itself needs of the scene is the instances' places, levels, parts and walls, the walls, the storeys and the floor's height: the pictures, materials, lights and
+// per-instance light data are the renderer's, and it has its own copy of them.
+void trimScene(ts2::scene::Scene& scene) {
+    scene.images = {};
+    scene.materials = {};
+    scene.lightSets = {};
+    scene.envCubes = {};
+    scene.lightMaps.reset();
+    scene.objectLighting.reset();
+    scene.actors = {};
+    scene.placedObjects = {};
+    scene.thingLights = {};
+    scene.thingSun = {};
+    for (auto& instance : scene.instances) {
+        instance.sun = {};
+        instance.partLightSets = {};
+        instance.name = {};
+    }
 }
 
 // The lot's simulation from a bank folder simbank wrote, with the routes and animations the game's models gave when it was made.
@@ -96,13 +123,24 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
 
 int runConsoleLot(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifdef NEOTS2_PS2_DEBUG
+    ts2StartPcSampler();
+    ts2StartMonitor();
+#endif
+    // An allocation that fails leaves what the heap looked like where PINE can read it (see g_oom*).
+    std::set_new_handler([] {
+        const auto mi = mallinfo();
+        g_oomArena = static_cast<unsigned>(mi.arena);
+        g_oomUsed = static_cast<unsigned>(mi.uordblks);
+        g_oomFree = static_cast<unsigned>(mi.fordblks);
+        g_oomLargest = static_cast<unsigned>(mi.keepcost);
+        g_oomStage = g_consoleStage;
+        throw std::bad_alloc();
+    });
+    ts2::sim::RouteGrid::finestSize = 0.25f;  // a fourth of the route grid's cells
     g_consoleStopAt = argc > 3 ? static_cast<unsigned>(std::strtoul(argv[3], nullptr, 10)) : 0;
     const std::filesystem::path bank = argc > 1 ? argv[1] : "cdrom0:\\BANK";
     const std::string scenePath = argc > 2 ? argv[2] : "cdrom0:\\LOT.CSC";
-    if (!ts2::platform::init()) {
-        std::printf("neots2: %s\n", ts2::platform::lastError().c_str());
-        return 1;
-    }
     GSGLOBAL* gs = gsKit_init_global();
     gs->Width = 640;
     gs->Height = 448;
@@ -115,6 +153,11 @@ int runConsoleLot(int argc, char** argv) {
     dmaKit_chan_init(DMA_CHANNEL_GIF);
     gsKit_init_screen(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
+    // The controller after the screen, as the viewer test program does it.
+    if (!ts2::platform::init()) {
+        std::printf("neots2: %s\n", ts2::platform::lastError().c_str());
+        return 1;
+    }
     try {
         // The baked scene: its head is read now, its pictures from the disc when they are first drawn.
         std::FILE* file = std::fopen(scenePath.c_str(), "rb");
@@ -144,14 +187,18 @@ int runConsoleLot(int argc, char** argv) {
                 return blob;
             },
             2 * 1024 * 1024);
+        renderer.setCacheBudgets(256 * 1024, 256 * 1024);  // (the simulation has the rest of the heap)
         auto prepared = renderer.prepareBaked(scene, std::move(meshes));
         renderer.upload(std::move(prepared));
         memory("scene uploaded");
         // The lot's simulation.
         g_consoleStage = 2;
-        ConsoleLife life(loadBank(bank), scene);
+        const bool withSim = !(argc > 4 && std::string(argv[4]) == "nosim");  // (to see the scene alone: 4th argument)
+        ConsoleLife life(withSim ? loadBank(bank) : nullptr, scene);
         g_consoleStage = 3;
         memory("simulation loaded");
+        trimScene(scene);
+        memory("scene trimmed");
         std::printf("neots2: %zu Sim markers, clock %s\n", life.markerCount(), life.clockText().c_str());
 
         Orbit orbit;

@@ -123,6 +123,9 @@ public:
 
     // Leaves are an eighth of a tile at the finest level.
     static constexpr float kFinestSize = 0.125f;
+    // The size grids made from now on go down to: the game's, or coarser (a power of two, in tiles) where memory is short: a quarter tile gives a fourth of the
+    // cells, and a wall or a footprint closes a cell whole where it touches it.
+    static inline float finestSize = kFinestSize;
 
 private:
     bool insert(int item, int cell);

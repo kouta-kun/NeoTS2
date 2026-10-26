@@ -9,6 +9,7 @@
 #include "content/resource_index.hpp"
 #include "sim/index_code_source.hpp"
 #include "sim/lot_simulation.hpp"
+#include "sim/route_grid.hpp"
 #include "sim/support_table.hpp"
 
 #include <malloc.h>
@@ -102,6 +103,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "Usage: simmem <install-folder> <lot.package> [ticks] | simmem <bank-folder> [ticks]\n");
         return 1;
     }
+    // A coarser route grid, as the console's lot mode has it (SIMMEM_FINEST=0.25 on the host; the console always).
+#ifdef __PS2__
+    ts2::sim::RouteGrid::finestSize = 0.25f;
+#else
+    if (const char* finest = std::getenv("SIMMEM_FINEST")) {
+        ts2::sim::RouteGrid::finestSize = std::strtof(finest, nullptr);
+    }
+#endif
     try {
         const std::filesystem::path bank = argv[1];
         std::ifstream cfg(bank / "sim.cfg");

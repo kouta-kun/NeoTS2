@@ -26,9 +26,15 @@ constexpr float kStorey = 3.0f;
 
 // Points the camera at the middle of everything placed in the scene, far enough to see it all.
 inline void frameScene(const ts2::scene::Scene& scene, Orbit& orbit) {
+    if (scene.meshes.empty() && scene.lotSize[0] > 0 && scene.lotSize[1] > 0) {
+        // A baked scene on the console keeps its meshes outside the scene (and has no meshes to tell the terrain by): the lot's own size says where it is.
+        orbit.target = {scene.lotSize[0] / 2, scene.lotSize[1] / 2, 0};
+        orbit.distance = std::max(10.0f, 1.2f * std::max(scene.lotSize[0], scene.lotSize[1]));
+        return;
+    }
     Vec3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
     for (const auto& instance : scene.instances) {
-        if (instance.mesh < 0 || scene.meshes[static_cast<std::size_t>(instance.mesh)].name == "terrain") {
+        if (instance.mesh < 0 || static_cast<std::size_t>(instance.mesh) >= scene.meshes.size() || scene.meshes[static_cast<std::size_t>(instance.mesh)].name == "terrain") {
             continue;
         }
         const auto& t = instance.transform.m;

@@ -6,6 +6,7 @@
 //    g_sem*: that semaphore's state).
 //  - g_semaLog, g_pteLog: the kernel semaphores created and who asked (the program had run out of them: see pthread_light.cpp).
 #include <kernel.h>
+#include <sifrpc.h>
 #include <delaythread.h>
 #include <cstdint>
 #include <cstdio>
@@ -95,6 +96,37 @@ int __wrap_pte_osSemaphoreCreate(int initialValue, void* pHandle) {
     }
     ++g_pteN;
     return result;
+}
+
+volatile unsigned g_rpcSid = 0, g_rpcNumber = 0, g_rpcCount = 0, g_rpcSendSize = 0, g_rpcDone = 0;
+int __real_sceSifCallRpc(SifRpcClientData_t* client, int number, int mode, void* send, int sendSize, void* receive, int receiveSize, SifRpcEndFunc_t endFunction,
+                      void* endArgument);
+int __wrap_sceSifCallRpc(SifRpcClientData_t* client, int number, int mode, void* send, int sendSize, void* receive, int receiveSize, SifRpcEndFunc_t endFunction,
+                      void* endArgument) {
+    g_rpcSid = static_cast<unsigned>(reinterpret_cast<unsigned long>(client));  // (the client data tells the service: one per library)
+    g_rpcNumber = static_cast<unsigned>(number);
+    g_rpcSendSize = static_cast<unsigned>(sendSize);
+    ++g_rpcCount;
+    const int result = __real_sceSifCallRpc(client, number, mode, send, sendSize, receive, receiveSize, endFunction, endArgument);
+    ++g_rpcDone;
+    return result;
+}
+
+// A program that aborts or exits is reloaded by the BIOS and its memory lost: park instead, with where it was called from, so that it can be read.
+volatile unsigned g_exitKind = 0, g_exitRa = 0, g_exitRa2 = 0, g_exitCode = 0;
+void __real_abort();
+void __wrap_abort() {
+    g_exitKind = 1;
+    g_exitRa = static_cast<unsigned>(reinterpret_cast<unsigned long>(__builtin_return_address(0)));
+    for (;;) {
+    }
+}
+void __wrap__exit(int code) {
+    g_exitKind = 2;
+    g_exitCode = static_cast<unsigned>(code);
+    g_exitRa = static_cast<unsigned>(reinterpret_cast<unsigned long>(__builtin_return_address(0)));
+    for (;;) {
+    }
 }
 
 void ts2StartPcSampler() {

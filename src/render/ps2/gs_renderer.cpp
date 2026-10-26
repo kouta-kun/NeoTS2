@@ -837,7 +837,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             const std::size_t needed = 16 + chunks * 2;
             if (slot.chainCapacity < needed) {
                 std::free(slot.chain);
-                slot.chainCapacity = needed * 2;
+                slot.chainCapacity = needed + needed / 4;
                 slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
             }
             if (slot.chain == nullptr) {
@@ -897,7 +897,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         const std::size_t tagCount = 8 + std::size_t{fullBatches + 1} * 6;
         if (slot.chainCapacity < tagCount) {
             std::free(slot.chain);
-            slot.chainCapacity = tagCount * 2;
+            slot.chainCapacity = tagCount + tagCount / 4;
             slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
         }
         if (slot.chain == nullptr) {

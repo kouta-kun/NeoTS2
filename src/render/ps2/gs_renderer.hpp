@@ -76,6 +76,13 @@ public:
         textureBudget_ = textureBudget;
     }
 
+    // How much memory the caches may keep (the lit colours on the EE, and those in the vector unit's format). A program that shares the heap with a simulation
+    // gives them less; a colour that does not fit is worked out again when it is drawn.
+    void setCacheBudgets(std::size_t lit, std::size_t litVu) {
+        litCacheBudget_ = lit;
+        litVuBudget_ = litVu;
+    }
+
     // What the last frame did, for a test program to print.
     struct FrameStats {
         std::size_t draws = 0, triangles = 0, drawn = 0, culled = 0, clipped = 0, uploads = 0, textureBytes = 0;

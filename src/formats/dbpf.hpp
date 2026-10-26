@@ -59,6 +59,8 @@ public:
 
     const Header& header() const { return header_; }
     const std::vector<IndexEntry>& entries() const { return entries_; }
+    // For a package read into memory whose entries were copied elsewhere (a ResourceIndex has them): gives the vector's memory back. Reads take the entry they are given.
+    void releaseEntries() { std::vector<IndexEntry>().swap(entries_); }
 
     std::vector<std::uint8_t> readRaw(const IndexEntry& entry);
     std::vector<std::uint8_t> read(const IndexEntry& entry);

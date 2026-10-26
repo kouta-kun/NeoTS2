@@ -33,6 +33,9 @@ std::size_t ResourceIndex::addPackage(const std::filesystem::path& path,
         }
     }
 
+    if (inMemory) {
+        package->releaseEntries();  // (the index above holds them now)
+    }
     packages_.push_back(std::move(package));
     paths_.push_back(path);
     return packageIndex;

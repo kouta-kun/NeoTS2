@@ -30,7 +30,7 @@ RouteGrid::RouteGrid(float width, float height) : width_(lotSize(width)), height
     while (size < std::max(width_, height_)) {
         size *= 2;
     }
-    finestLevel_ = static_cast<int>(std::lround(std::log2(size / kFinestSize)));
+    finestLevel_ = static_cast<int>(std::lround(std::log2(size / finestSize)));
     Cell root;
     root.size = size;
     cells_.push_back(std::move(root));
