@@ -787,6 +787,11 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         for (int k = 0; k < 8; ++k) {
             guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
         }
+        if (frameNumber_ == 1 && sent >= 240 && sent <= 330) {
+            tracef("gs: d%zu part %d obj %u corners %u tex %d psm %d %ux%u upload %d clut %d alpha %d blend %d inview %d", sent - 1, static_cast<int>(d.instance->part), d.instance->object, corners,
+                   texture ? 1 : 0, texture ? static_cast<int>(texture->tex.PSM) : -1, texture ? static_cast<unsigned>(texture->tex.Width) : 0u, texture ? static_cast<unsigned>(texture->tex.Height) : 0u,
+                   upload ? 1 : 0, texture && texture->clut ? 1 : 0, m ? static_cast<int>(m->alpha) : -1, blend, static_cast<int>(boxInView(guarded, p.low, p.high)));
+        }
         if (boxInView(guarded, p.low, p.high) != InView::Inside) {
             const auto& r = mvp.m;
             const float scale[3] = {(soup->hi[0] - soup->lo[0]) / 65535.0f, (soup->hi[1] - soup->lo[1]) / 65535.0f, (soup->hi[2] - soup->lo[2]) / 65535.0f};
@@ -977,8 +982,15 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         SyncDCache(chain, chain + t_);
         frame_.vuBuild += now() - t0;
         t0 = now();
+        const bool traced = frameNumber_ == 1 && sent >= 240 && sent <= 330;
+        if (traced) {
+            tracef("gs: d%zu: chain of %u tags built, waiting for the DMA", sent - 1, t_);
+        }
         dma_channel_wait(DMA_CHANNEL_VIF1, 0);  // the DMA is one chain at a time: the last draw's must have been read
         dma_channel_send_chain(DMA_CHANNEL_VIF1, chain, 0, DMA_FLAG_TRANSFERTAG, 0);
+        if (traced) {
+            tracef("gs: d%zu: chain sent", sent - 1);
+        }
         frame_.vuWait += now() - t0;
         slot_ ^= 1;
     }
