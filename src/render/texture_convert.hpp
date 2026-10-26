@@ -19,6 +19,9 @@ struct ConvertOptions {
     // the primitive's size (see content/mesh_decimate.hpp).
     bool weld = true;  // identical vertices made one before anything else is done to a mesh
     double meshKeep = 1;
+    // Baked scenes only: primitives (of meshes that nothing indexes by primitive, opaque or layered) with more triangles than this are cut into
+    // pieces of at most that many along their longest side, so that a piece in view is drawn whole and one out of view is not drawn (0: not cut).
+    std::size_t splitTriangles = 0;
     double meshError = 0.1;
 };
 

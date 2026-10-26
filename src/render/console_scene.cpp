@@ -624,6 +624,49 @@ scene::Primitive weldedPrimitive(const scene::Primitive& p) {
     return q;
 }
 
+// `p` cut into pieces of at most `limit` triangles: its triangles are split at the middle of their centres along the longest side, again and again.
+// The pieces share the vertex arrays (the soup written for each holds only the corners its triangles use).
+void splitPrimitive(const scene::Primitive& p, std::size_t limit, std::vector<scene::Primitive>& out) {
+    const std::size_t triangles = p.indices.size() / 3;
+    if (triangles <= limit || p.positions.empty()) {
+        out.push_back(p);
+        return;
+    }
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    std::vector<std::array<float, 3>> centres(triangles);
+    for (std::size_t t = 0; t < triangles; ++t) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            float sum = 0;
+            for (std::size_t c = 0; c < 3; ++c) {
+                sum += p.positions[std::size_t{p.indices[t * 3 + c]} * 3 + k];
+            }
+            centres[t][k] = sum / 3;
+            lo[k] = std::min(lo[k], centres[t][k]);
+            hi[k] = std::max(hi[k], centres[t][k]);
+        }
+    }
+    std::size_t axis = 0;
+    for (std::size_t k = 1; k < 3; ++k) {
+        if (hi[k] - lo[k] > hi[axis] - lo[axis]) {
+            axis = k;
+        }
+    }
+    const float middle = (lo[axis] + hi[axis]) / 2;
+    scene::Primitive a = p, b = p;
+    a.indices.clear();
+    b.indices.clear();
+    for (std::size_t t = 0; t < triangles; ++t) {
+        auto& side = centres[t][axis] < middle ? a : b;
+        side.indices.insert(side.indices.end(), p.indices.begin() + static_cast<std::ptrdiff_t>(t * 3), p.indices.begin() + static_cast<std::ptrdiff_t>(t * 3 + 3));
+    }
+    if (a.indices.empty() || b.indices.empty()) {  // (all the centres in one place: it stays whole)
+        out.push_back(p);
+        return;
+    }
+    splitPrimitive(a, limit, out);
+    splitPrimitive(b, limit, out);
+}
+
 // The primitive with fewer triangles, its per-vertex data carried along to the vertices that are left.
 scene::Primitive reducedPrimitive(const scene::Primitive& p, const ConvertOptions& options) {
     const std::size_t vertices = p.positions.size() / 3;
@@ -742,17 +785,36 @@ std::vector<std::uint8_t> bakeScene(const scene::Scene& scene, const ConvertOpti
     }
     o.u32(static_cast<std::uint32_t>(scene.meshes.size()));
     const std::size_t beforeMeshes = o.bytes.size();
-    for (const scene::Mesh& mesh : scene.meshes) {
+    // Meshes whose primitives something counts: an instance's sun and light sets are per primitive, a skin's joints belong to the mesh.
+    std::vector<std::uint8_t> keepWhole(scene.meshes.size(), 0);
+    for (const auto& x : scene.instances) {
+        if (x.mesh >= 0 && static_cast<std::size_t>(x.mesh) < keepWhole.size() && (!x.sun.empty() || !x.partLightSets.empty())) {
+            keepWhole[static_cast<std::size_t>(x.mesh)] = 1;
+        }
+    }
+    for (std::size_t m = 0; m < scene.meshes.size(); ++m) {
+        const scene::Mesh& mesh = scene.meshes[m];
         o.str(mesh.name);
-        o.u32(static_cast<std::uint32_t>(mesh.primitives.size()));
+        std::vector<scene::Primitive> pieces;
+        pieces.reserve(mesh.primitives.size());
         for (const auto& original : mesh.primitives) {
             const scene::Primitive welded = options.weld ? weldedPrimitive(original) : original;
-            const scene::Primitive p = options.meshKeep < 1 ? reducedPrimitive(welded, options) : welded;
+            scene::Primitive p = options.meshKeep < 1 ? reducedPrimitive(welded, options) : welded;
+            st.trianglesBefore += original.indices.size() / 3;
+            st.verticesBefore += original.positions.size() / 3;
+            const scene::Material* material = p.material >= 0 && static_cast<std::size_t>(p.material) < scene.materials.size() ? &scene.materials[static_cast<std::size_t>(p.material)] : nullptr;
+            const bool cut = options.splitTriangles > 0 && !keepWhole[m] && mesh.skin.empty() && material != nullptr && (material->alpha == scene::AlphaMode::Opaque || material->alpha == scene::AlphaMode::Mask || material->alpha == scene::AlphaMode::Layer);
+            if (cut) {
+                splitPrimitive(p, options.splitTriangles, pieces);
+            } else {
+                pieces.push_back(std::move(p));
+            }
+        }
+        o.u32(static_cast<std::uint32_t>(pieces.size()));
+        for (const auto& p : pieces) {
             writePrimitive(o, p);
             ++st.primitives;
-            st.trianglesBefore += original.indices.size() / 3;
             st.triangles += p.indices.size() / 3;
-            st.verticesBefore += original.positions.size() / 3;
             st.vertices += p.indices.size();  // corners: the soup repeats a vertex for each triangle that uses it
         }
         o.u32(static_cast<std::uint32_t>(mesh.skin.size()));

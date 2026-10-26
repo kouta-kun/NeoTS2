@@ -761,6 +761,8 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
 
         // A primitive that crosses the guard band or the near plane is clipped and projected by the EE and sent through the VIF behind a FLUSHA (so
         // after the draws before it); the rest, nearly all, go to the VU1 as they are.
+        frame_.state += now() - t0;  // (the texture: lookup, a place in VRAM, the GS state)
+        const double clip0 = now();
         const Mat4 mvp = f.viewProjection * fromRows(vu.model);
         Mat4 guarded = mvp;
         for (int k = 0; k < 8; ++k) {
@@ -772,31 +774,55 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             const float uvScale = (soup->uvHi - soup->uvLo) / 65535.0f;
             const float width = static_cast<float>(gs_->Width), height = static_cast<float>(gs_->Height);
             const bool cull = !(m && m->doubleSided);
-            const auto corner = [&](unsigned c) {
-                const float ux = soup->lo[0] + scale[0] * soup->positions[c * 4], uy = soup->lo[1] + scale[1] * soup->positions[c * 4 + 1], uz = soup->lo[2] + scale[2] * soup->positions[c * 4 + 2];
-                ClipVertex v;
-                v.x = r[0] * ux + r[1] * uy + r[2] * uz + r[3];
-                v.y = r[4] * ux + r[5] * uy + r[6] * uz + r[7];
-                v.z = r[8] * ux + r[9] * uy + r[10] * uz + r[11];
-                v.w = r[12] * ux + r[13] * uy + r[14] * uz + r[15];
+            // The matrix takes the quantised positions as they are: the range and offset are folded into it.
+            float fold[4][4];
+            for (int row = 0; row < 4; ++row) {
+                for (int k = 0; k < 3; ++k) {
+                    fold[row][k] = r[row * 4 + k] * scale[k];
+                }
+                fold[row][3] = r[row * 4 + 3] + r[row * 4] * soup->lo[0] + r[row * 4 + 1] * soup->lo[1] + r[row * 4 + 2] * soup->lo[2];
+            }
+            const auto position = [&](unsigned c, ClipVertex& v) {
+                const float qx = soup->positions[c * 4], qy = soup->positions[c * 4 + 1], qz = soup->positions[c * 4 + 2];
+                v.x = fold[0][0] * qx + fold[0][1] * qy + fold[0][2] * qz + fold[0][3];
+                v.y = fold[1][0] * qx + fold[1][1] * qy + fold[1][2] * qz + fold[1][3];
+                v.z = fold[2][0] * qx + fold[2][1] * qy + fold[2][2] * qz + fold[2][3];
+                v.w = fold[3][0] * qx + fold[3][1] * qy + fold[3][2] * qz + fold[3][3];
+            };
+            const auto attributes = [&](unsigned c, ClipVertex& v) {
                 v.r = colours[c * 4];
                 v.g = colours[c * 4 + 1];
                 v.b = colours[c * 4 + 2];
                 v.a = colours[c * 4 + 3];
                 v.u = soup->uvLo + uvScale * uvArray[c * 2];
                 v.v = soup->uvLo + uvScale * uvArray[c * 2 + 1];
-                return v;
             };
             slot.eeVertices.clear();
             for (unsigned c = 0; c + 2 < corners; c += 3) {
-                const ClipVertex in[3] = {corner(c), corner(c + 1), corner(c + 2)};
-                const unsigned codes = outcode(in[0]) & outcode(in[1]) & outcode(in[2]);
-                if (codes != 0) {
+                ClipVertex in[3];
+                unsigned codes[3];
+                for (unsigned k = 0; k < 3; ++k) {
+                    position(c + k, in[k]);
+                    codes[k] = outcode(in[k]);
+                }
+                if ((codes[0] & codes[1] & codes[2]) != 0) {
                     continue;
+                }
+                const bool clipped = (codes[0] | codes[1] | codes[2]) != 0;
+                if (!clipped && cull) {
+                    // Whole and inside: facing away is known from the positions alone.
+                    const float q0 = 1.0f / in[0].w, q1 = 1.0f / in[1].w, q2 = 1.0f / in[2].w;
+                    const float x0 = in[0].x * q0, y0 = in[0].y * q0;
+                    if ((in[1].x * q1 - x0) * (in[2].y * q2 - y0) - (in[2].x * q2 - x0) * (in[1].y * q1 - y0) <= 0) {  // (the y axis points down on the screen)
+                        continue;
+                    }
+                }
+                for (unsigned k = 0; k < 3; ++k) {
+                    attributes(c + k, in[k]);
                 }
                 ClipVertex poly[16];
                 int count = 3;
-                if ((outcode(in[0]) | outcode(in[1]) | outcode(in[2])) != 0) {
+                if (clipped) {
                     count = clipPolygon(in, 3, poly);
                 } else {
                     std::copy(in, in + 3, poly);
@@ -830,6 +856,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                     slot.eeVertices.insert(slot.eeVertices.end(), gv, gv + 3);
                 }
             }
+            frame_.transform += now() - clip0;  // (the corners worked out on the EE)
             ++frame_.clipped;
             frame_.eeCorners += slot.eeVertices.size();
             constexpr std::size_t kChunkVertices = 9000;  // a GIF tag counts at most 32,767 loops

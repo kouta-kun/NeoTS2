@@ -213,7 +213,7 @@ int runConsoleLot(int argc, char** argv) {
                 return blob;
             },
             2 * 1024 * 1024);
-        renderer.setCacheBudgets(256 * 1024, 256 * 1024);  // (the simulation has the rest of the heap)
+        renderer.setCacheBudgets(256 * 1024, 1536 * 1024);  // (the simulation has the rest of the heap)
         auto prepared = renderer.prepareBaked(scene, std::move(meshes));
         renderer.upload(std::move(prepared));
         memory("scene uploaded");
@@ -259,6 +259,11 @@ int runConsoleLot(int argc, char** argv) {
         CONSOLE_STAGE(11);
         std::uint64_t last = ts2::platform::ticksNs();
         unsigned frame = 0;
+        // Where a frame's time goes (wall clock; in an emulator only the proportions mean anything): sums over `kProfileFrames` frames, in seconds.
+        constexpr unsigned kProfileFrames = 60;
+        double sumUpdate = 0, sumVisible = 0, sumDraw = 0, sumFrame = 0;
+        ts2::render::GsRenderer::FrameStats sum;
+        const auto seconds = [] { return static_cast<double>(ts2::platform::ticksNs()) / 1e9; };
         g_consoleStage = 4;
         for (bool running = true; running; ++frame) {
             g_consoleFrame = frame;
@@ -282,7 +287,9 @@ int runConsoleLot(int argc, char** argv) {
             orbitStep(orbit, dt);
             lotView.view.facing = orbit.facing();
             CONSOLE_STAGE(14);
+            const double tFrame = seconds();
             life.update(static_cast<double>(dt) * 1000, scene, renderer);
+            const double tUpdated = seconds();
             CONSOLE_STAGE(15);
             if (argc > 9 && scene.floorHeight && life.hasSimulation()) {
                 // For tests (argument 9): the camera follows this Sim.
@@ -293,6 +300,7 @@ int runConsoleLot(int argc, char** argv) {
                     lotView.view.level = std::clamp(static_cast<int>(scene.groundLevel + followed->level - 1), lotView.ground, lotView.top);
                 }
             }
+            const double tVisible0 = seconds();
             auto visible = ts2::scene::visibleInstances(scene, lotView.view);
             const auto before = static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1}));
             keepCurrentStorey(scene, lotView.view, visible);
@@ -309,8 +317,30 @@ int runConsoleLot(int argc, char** argv) {
                             static_cast<double>(cam.target[2]), static_cast<double>(cam.fovX), static_cast<double>(cam.fovY), static_cast<double>(cam.farPlane),
                             static_cast<double>(cam.nearPlane));
             }
+            const double tDraw0 = seconds();
             if (!renderer.draw(orbit.camera())) {
                 break;
+            }
+            const double tDrawn = seconds();
+            sumUpdate += tUpdated - tFrame;
+            sumVisible += tDraw0 - tVisible0;
+            sumDraw += tDrawn - tDraw0;
+            sumFrame += tDrawn - tFrame;
+            {
+                const auto& f = renderer.lastFrame();
+                sum.collect += f.collect, sum.uniforms += f.uniforms, sum.light += f.light, sum.vuBuild += f.vuBuild, sum.vuWait += f.vuWait, sum.expand += f.expand;
+                sum.transform += f.transform, sum.emit += f.emit, sum.state += f.state, sum.submit += f.submit;
+                sum.eeCorners += f.eeCorners, sum.vuCorners += f.vuCorners, sum.draws += f.draws, sum.uploads += f.uploads, sum.clipped += f.clipped, sum.litHits += f.litHits, sum.litMisses += f.litMisses;
+            }
+            if (frame % kProfileFrames == kProfileFrames - 1) {
+                const double n = kProfileFrames, ms = 1000.0 / n;
+                std::printf("neots2: profile %u frames, %.1f ms a frame: sim update %.1f, visibility %.1f, draw %.1f (collect %.1f, uniforms %.1f, light %.1f, vu build %.1f (texture %.1f, ee clip %.1f), vu wait %.1f,"
+                            " submit %.1f); %zu ee corners, %zu vu corners; %.0f draws, %.1f uploads, %.1f clipped, lit cache %zu hits %zu misses a frame\n",
+                            kProfileFrames, sumFrame * ms, sumUpdate * ms, sumVisible * ms, sumDraw * ms, sum.collect * ms, sum.uniforms * ms, sum.light * ms, sum.vuBuild * ms, sum.state * ms, sum.transform * ms,
+                            sum.vuWait * ms, sum.submit * ms, sum.eeCorners / kProfileFrames, sum.vuCorners / kProfileFrames, static_cast<double>(sum.draws) / n, static_cast<double>(sum.uploads) / n, static_cast<double>(sum.clipped) / n,
+                            sum.litHits / kProfileFrames, sum.litMisses / kProfileFrames);
+                sumUpdate = sumVisible = sumDraw = sumFrame = 0;
+                sum = {};
             }
             CONSOLE_STAGE(17);
             if (frame % 120 == 0) {

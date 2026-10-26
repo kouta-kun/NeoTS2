@@ -49,6 +49,9 @@ void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRend
         const float x = static_cast<float>(sim->y) / 65536.0f;  // the lot's x and y are the position's y and x
         const float y = static_cast<float>(sim->x) / 65536.0f;
         const auto place = ts2::scene::Transform::at(x, y, scene.floorHeight(sim->level, x, y), sim->heading ? *sim->heading : ts2::sim::compassHeading(sim->data[1]));
+        if (scene.instances[instance].transform.m == place.m) {  // (a Sim that stands still keeps its lit colours)
+            continue;
+        }
         scene.instances[instance].transform = place;
         scene.instances[instance].level = scene.groundLevel + sim->level - 1;
         renderer.setPlace(instance, place);

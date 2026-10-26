@@ -36,10 +36,26 @@ Lesson recorded: a test that draws only the suspect object, then adds the rest b
 - Sims: animation/skinning, per-Sim mesh detail, imposters for hidden storeys, the black patch where the pool's storey is hidden.
 - `app/console_lot.cpp` still has the test arguments (stage park id, `nosim`, start storey, camera distance, target, follow Sim, wall mode) and a few debug prints.
 - Day/night for baked lighting, UI, neighbourhood mode, audio, memory-card saves, disc layout.
-- **Profiling** (requested): why the console path is slow. Known so far: ~5 ms average tick with a 1.3 s route-plan spike on the EE, first-frame texture reads from `host:`,
-  EE-side lighting and per-draw cost. PCSX2 timings are proportions only.
+- Profiling continues (see below); the 1.3 s route-plan spike on the EE and first-frame texture reads from `host:` are not yet looked at.
 
 ## Debug recipes
 
 - View a given place: `ELF_ARGS="host:bank host:<scene>.cscene 0 nosim <storey> <distance> <x> <y> 0 <wallmode>"`, e.g. `0 nosim 2 10 16 22 0 0` for Lot 68's Sims.
 - A suspect object that does not appear: skip every other draw in `drawListVu`, then bring passes back; print the projected GS bounds and the first vertices.
+
+## Profile of the console frame (PCSX2, Lot 68 storey 2, 4 Sims, simulation running)
+
+`neots2` prints a `profile` line every 60 frames (sim update, visibility, draw and the renderer's phases; wall clock in an emulator, so proportions only,
+and nothing here is a real PS2 number). Milliseconds a frame, in the order the problems were found:
+
+| Step | frame | what it was |
+|---|---|---|
+| start | 946 | light 696 (lit-colour cache missed on 289 of 614 draws), vu build 140 (EE clipping 109), sim update 55 |
+| lit-colour cache budget 256 K -> 1.5 M | 255 | the working set did not fit, so a miss was never kept; 592 of 615 draws now hit |
+| EE clip loop: positions and back-face test before colours and uvs | ~245 | only the clip phase moved (109 -> 101): the cost is per corner worked out on the EE, not the matrix |
+| `ts2bake --split 500`: big opaque, masked and layered primitives cut into pieces of at most 500 triangles | 198 | the terrain's pieces (22,464 corners in one primitive) straddled the guard band every frame and went through the EE; pieces mostly go to the VU1 or are culled by their box. EE corners 25k -> 3k |
+| `ConsoleLife` skips a Sim part whose place did not change | 120-140 | every tick bumped the instance's generation, so every Sim part was lit again every frame (23 misses, ~57 ms) |
+
+Left, in order of size: VU chain building (~34 ms for ~640 draws), EE clipping (~17), the per-draw uniforms (9), collect (7), texture lookup (4.5), the sim update (7 to 20 with Sims walking).
+Ideas: light Sims only when they have moved a tile (they are lit again on every step); fewer draws by merging primitives with the same material; a cheaper chain per draw.
+Splitting leaves out blended primitives, skinned meshes and meshes whose instances keep per-primitive sun or light sets (`Instance::sun`, `partLightSets`).

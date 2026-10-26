@@ -31,6 +31,8 @@ int main(int argc, char** argv) {
             options.maxSide = static_cast<unsigned>(std::stoul(argv[++i]));
         } else if (a == "--markers") {
             withMarkers = true;
+        } else if (a == "--split" && i + 1 < argc) {
+            options.splitTriangles = static_cast<std::size_t>(std::stoul(argv[++i]));
         } else if (a == "--no-weld") {
             options.weld = false;
         } else if (a == "--mesh-keep" && i + 1 < argc) {
@@ -44,7 +46,7 @@ int main(int argc, char** argv) {
         }
     }
     if (args.size() != 3) {
-        std::fprintf(stderr, "Usage: ts2bake <install-folder> <lot.package> <out.cscene> [--max-side N] [--palette-error E] [--mesh-keep K [--mesh-error F]]\n");
+        std::fprintf(stderr, "Usage: ts2bake <install-folder> <lot.package> <out.cscene> [--max-side N] [--palette-error E] [--mesh-keep K [--mesh-error F]] [--split TRIANGLES]\n");
         return 1;
     }
     try {
