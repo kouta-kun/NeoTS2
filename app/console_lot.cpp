@@ -139,8 +139,17 @@ int runConsoleLot(int argc, char** argv) {
     });
     ts2::sim::RouteGrid::finestSize = 0.25f;  // a fourth of the route grid's cells
     g_consoleStopAt = argc > 3 ? static_cast<unsigned>(std::strtoul(argv[3], nullptr, 10)) : 0;
-    const std::filesystem::path bank = argc > 1 ? argv[1] : "cdrom0:\\BANK";
-    const std::string scenePath = argc > 2 ? argv[2] : "cdrom0:\\LOT.CSC";
+    // Without arguments (a launcher that does not pass them): the disc's folders, else beside the program (host:), where the demo archive keeps them.
+    std::filesystem::path bank = argc > 1 ? argv[1] : "cdrom0:\\BANK";
+    std::string scenePath = argc > 2 ? argv[2] : "cdrom0:\\LOT.CSC";
+    if (argc <= 2) {
+        if (std::FILE* probe = std::fopen(scenePath.c_str(), "rb")) {
+            std::fclose(probe);
+        } else {
+            bank = "host:bank";
+            scenePath = "host:lot.cscene";
+        }
+    }
     GSGLOBAL* gs = gsKit_init_global();
     gs->Width = 640;
     gs->Height = 448;

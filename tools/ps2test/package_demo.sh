@@ -38,7 +38,7 @@ Files
 
 Running it in PCSX2
   1. Settings > Advanced > tick "Enable Host Filesystem" (a BIOS must be set up as usual).
-  2. ./run_pcsx2.sh        (or: pcsx2-qt -elf neots2.elf -gameargs "host:bank host:lot.cscene")
+  2. ./run_pcsx2.sh        (or: pcsx2-qt -elf neots2.elf; without arguments it finds bank/ and lot.cscene beside the ELF, arguments override that)
      "host:" is this folder. Loading takes about 10 seconds (PCSX2 does not model a disc). The software renderer is fine too, but slow.
 
 Controls (the controller in port 1; in PCSX2 the default keyboard mapping applies)
