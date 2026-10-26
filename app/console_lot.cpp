@@ -225,7 +225,7 @@ int runConsoleLot(int argc, char** argv) {
         memory("simulation loaded");
         trimScene(scene);
         memory("scene trimmed");
-        std::printf("neots2: %zu Sim markers, clock %s\n", life.markerCount(), life.clockText().c_str());
+        std::printf("neots2: %zu Sims, clock %s\n", life.simCount(), life.clockText().c_str());
 
         Orbit orbit;
         LotView lotView;
@@ -241,6 +241,20 @@ int runConsoleLot(int argc, char** argv) {
             }
             lotView.top = std::min(lotView.top, highestFloor);
             lotView.view.level = lotView.top;
+            // For tests, which cannot press buttons: the storey to start on, and how far the camera starts (arguments 5 and 6, and 7 and 8 for the lot position it looks at).
+            if (argc > 5) {
+                lotView.view.level = std::clamp(static_cast<int>(std::strtol(argv[5], nullptr, 10)), lotView.ground, lotView.top);
+            }
+            if (argc > 6) {
+                orbit.distance = std::strtof(argv[6], nullptr);
+            }
+            if (argc > 10) {
+                lotView.setWallMode(static_cast<int>(std::strtol(argv[10], nullptr, 10)));  // (argument 10: 0 walls down, 1 cutaway, 2 up, 3 up with roofs)
+            }
+            if (argc > 8 && scene.floorHeight) {
+                const float x = std::strtof(argv[7], nullptr), y = std::strtof(argv[8], nullptr);  // (and where the camera looks: a lot position)
+                orbit.target = {x, y, scene.floorHeight(lotView.view.level, x, y) + 0.8f};
+            }
         }
         CONSOLE_STAGE(11);
         std::uint64_t last = ts2::platform::ticksNs();
@@ -270,6 +284,15 @@ int runConsoleLot(int argc, char** argv) {
             CONSOLE_STAGE(14);
             life.update(static_cast<double>(dt) * 1000, scene, renderer);
             CONSOLE_STAGE(15);
+            if (argc > 9 && scene.floorHeight && life.hasSimulation()) {
+                // For tests (argument 9): the camera follows this Sim.
+                if (const auto* followed = life.simulation().world().find(static_cast<std::int16_t>(std::strtol(argv[9], nullptr, 10)));
+                    followed != nullptr && followed->x != ts2::sim::kOffLot) {
+                    const float x = static_cast<float>(followed->y) / 65536.0f, y = static_cast<float>(followed->x) / 65536.0f;
+                    orbit.target = {x, y, scene.floorHeight(followed->level, x, y) + 0.8f};
+                    lotView.view.level = std::clamp(static_cast<int>(scene.groundLevel + followed->level - 1), lotView.ground, lotView.top);
+                }
+            }
             auto visible = ts2::scene::visibleInstances(scene, lotView.view);
             const auto before = static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1}));
             keepCurrentStorey(scene, lotView.view, visible);
@@ -279,11 +302,25 @@ int runConsoleLot(int argc, char** argv) {
             }
             renderer.show(std::move(visible));
             CONSOLE_STAGE(16);
+            if (frame == 2) {
+                const auto cam = orbit.camera();
+                std::printf("neots2: camera eye %.3f %.3f %.3f target %.3f %.3f %.3f fovX %.4f fovY %.4f far %.1f near %.4f\n", static_cast<double>(cam.eye[0]),
+                            static_cast<double>(cam.eye[1]), static_cast<double>(cam.eye[2]), static_cast<double>(cam.target[0]), static_cast<double>(cam.target[1]),
+                            static_cast<double>(cam.target[2]), static_cast<double>(cam.fovX), static_cast<double>(cam.fovY), static_cast<double>(cam.farPlane),
+                            static_cast<double>(cam.nearPlane));
+            }
             if (!renderer.draw(orbit.camera())) {
                 break;
             }
             CONSOLE_STAGE(17);
             if (frame % 120 == 0) {
+                if (argc > 9 && life.hasSimulation()) {
+                    if (const auto* followed = life.simulation().world().find(static_cast<std::int16_t>(std::strtol(argv[9], nullptr, 10))); followed != nullptr) {
+                        std::printf("neots2: Sim %s at x %.2f y %.2f level %d; camera target %.2f %.2f %.2f\n", argv[9], static_cast<double>(followed->x) / 65536.0,
+                                    static_cast<double>(followed->y) / 65536.0, static_cast<int>(followed->level), static_cast<double>(orbit.target[0]),
+                                    static_cast<double>(orbit.target[1]), static_cast<double>(orbit.target[2]));
+                    }
+                }
                 const auto& stats = renderer.lastFrame();
                 std::printf("neots2: frame %u, %zu ticks, clock %s; %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped, %zu vu batches, %zu textures read\n", frame,
                             life.ticks(), life.clockText().c_str(), stats.draws, stats.triangles, stats.drawn, stats.culled, stats.clipped, stats.vuBatches, stats.uploads);

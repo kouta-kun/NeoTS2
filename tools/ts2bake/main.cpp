@@ -12,20 +12,25 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
 int main(int argc, char** argv) {
     std::vector<std::string> args;
     ts2::render::ConvertOptions options;
+    bool withMarkers = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--max-side" && i + 1 < argc) {
             options.maxSide = static_cast<unsigned>(std::stoul(argv[++i]));
+        } else if (a == "--markers") {
+            withMarkers = true;
         } else if (a == "--no-weld") {
             options.weld = false;
         } else if (a == "--mesh-keep" && i + 1 < argc) {
@@ -68,55 +73,80 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // A marker for every Sim of the lot, where the console draws it until it has the Sims' own models: a post as tall as a Sim, an instance
-            // for each, filed under the Sim's object id.
-            const int material = builder.colorMaterial("sim marker", {0.95f, 0.25f, 0.2f});
-            ts2::scene::Mesh marker;
-            marker.name = "sim marker";
-            ts2::scene::Primitive& post = marker.primitives.emplace_back();
-            post.material = material;
-            constexpr float kHalf = 0.15f, kHeight = 0.9f;
-            // Six faces of four vertices: position, normal.
-            const float faces[6][4][3] = {{{-kHalf, -kHalf, 0}, {kHalf, -kHalf, 0}, {kHalf, kHalf, 0}, {-kHalf, kHalf, 0}},
-                                          {{-kHalf, -kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, -kHalf, kHeight}},
-                                          {{-kHalf, -kHalf, 0}, {-kHalf, -kHalf, kHeight}, {kHalf, -kHalf, kHeight}, {kHalf, -kHalf, 0}},
-                                          {{kHalf, kHalf, 0}, {kHalf, kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {-kHalf, kHalf, 0}},
-                                          {{-kHalf, kHalf, 0}, {-kHalf, kHalf, kHeight}, {-kHalf, -kHalf, kHeight}, {-kHalf, -kHalf, 0}},
-                                          {{kHalf, -kHalf, 0}, {kHalf, -kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, kHalf, 0}}};
-            const float normals[6][3] = {{0, 0, -1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}};
-            for (int f = 0; f < 6; ++f) {
-                const auto first = static_cast<std::uint32_t>(post.positions.size() / 3);
-                for (int v = 0; v < 4; ++v) {
-                    post.positions.insert(post.positions.end(), faces[f][v], faces[f][v] + 3);
-                    post.normals.insert(post.normals.end(), normals[f], normals[f] + 3);
-                    post.uvs.push_back(v == 1 || v == 2 ? 1.0f : 0.0f);
-                    post.uvs.push_back(v >= 2 ? 1.0f : 0.0f);
-                }
-                for (const std::uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) {
-                    post.indices.push_back(first + i);
-                }
-            }
-            const int markerMesh = static_cast<int>(editable.meshes.size());
-            editable.meshes.push_back(std::move(marker));
-            std::size_t markers = 0;
-            for (const auto& object : lot.objects) {
-                if (object.resourceType != ts2::types::kSavedPerson) {
+            // The Sims' own models are in the scene already, one instance for each of a Sim's meshes (hair, head, body), named "<Sim's id> <mesh>"; filing them
+            // under that object id lets the console move them with the simulation. With --markers a post as tall as a Sim is added for each Sim as well.
+            std::size_t simInstances = 0;
+            for (auto& instance : editable.instances) {
+                if (instance.lightGroup != ts2::scene::LightGroup::Sims || instance.object != 0) {
                     continue;
                 }
-                const auto& header = object.state.header;
-                const float lotX = header.location[1], lotY = header.location[0];  // (a position's x runs along the lot's y)
-                const int storey = std::max(1, static_cast<int>(header.value1));
-                ts2::scene::Instance instance;
-                instance.mesh = markerMesh;
-                instance.name = "sim-marker";
-                instance.object = object.id;
-                instance.part = ts2::scene::Part::Object;
-                instance.level = ground + storey - 1;
-                instance.lightGroup = ts2::scene::LightGroup::Sims;
-                instance.transform = ts2::scene::Transform::at(lotX, lotY, editable.floorHeight ? editable.floorHeight(storey, lotX, lotY) : 0.0f, 0.0f);
-                editable.instances.push_back(std::move(instance));
-                ++markers;
+                std::size_t digits = 0;
+                while (digits < instance.name.size() && instance.name[digits] >= '0' && instance.name[digits] <= '9') {
+                    ++digits;
+                }
+                if (digits > 0 && digits < instance.name.size() && instance.name[digits] == ' ') {
+                    instance.object = static_cast<std::uint32_t>(std::stoul(instance.name.substr(0, digits)));
+                    ++simInstances;
+                }
             }
+            // The console cannot skin yet: the Sims' meshes are drawn as they are in the bind pose, as plain meshes, with no joints or weights.
+            for (auto& mesh : editable.meshes) {
+                for (auto& primitive : mesh.primitives) {
+                    primitive.joints.clear();
+                    primitive.weights.clear();
+                }
+                mesh.skin.clear();
+            }
+            std::size_t markers = 0;
+            if (withMarkers) {
+                const int material = builder.colorMaterial("sim marker", {0.95f, 0.25f, 0.2f});
+                ts2::scene::Mesh marker;
+                marker.name = "sim marker";
+                ts2::scene::Primitive& post = marker.primitives.emplace_back();
+                post.material = material;
+                constexpr float kHalf = 0.15f, kHeight = 0.9f;
+                // Six faces of four vertices: position, normal.
+                const float faces[6][4][3] = {{{-kHalf, -kHalf, 0}, {kHalf, -kHalf, 0}, {kHalf, kHalf, 0}, {-kHalf, kHalf, 0}},
+                                              {{-kHalf, -kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, -kHalf, kHeight}},
+                                              {{-kHalf, -kHalf, 0}, {-kHalf, -kHalf, kHeight}, {kHalf, -kHalf, kHeight}, {kHalf, -kHalf, 0}},
+                                              {{kHalf, kHalf, 0}, {kHalf, kHalf, kHeight}, {-kHalf, kHalf, kHeight}, {-kHalf, kHalf, 0}},
+                                              {{-kHalf, kHalf, 0}, {-kHalf, kHalf, kHeight}, {-kHalf, -kHalf, kHeight}, {-kHalf, -kHalf, 0}},
+                                              {{kHalf, -kHalf, 0}, {kHalf, -kHalf, kHeight}, {kHalf, kHalf, kHeight}, {kHalf, kHalf, 0}}};
+                const float normals[6][3] = {{0, 0, -1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}};
+                for (int f = 0; f < 6; ++f) {
+                    const auto first = static_cast<std::uint32_t>(post.positions.size() / 3);
+                    for (int v = 0; v < 4; ++v) {
+                        post.positions.insert(post.positions.end(), faces[f][v], faces[f][v] + 3);
+                        post.normals.insert(post.normals.end(), normals[f], normals[f] + 3);
+                        post.uvs.push_back(v == 1 || v == 2 ? 1.0f : 0.0f);
+                        post.uvs.push_back(v >= 2 ? 1.0f : 0.0f);
+                    }
+                    for (const std::uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) {
+                        post.indices.push_back(first + i);
+                    }
+                }
+                const int markerMesh = static_cast<int>(editable.meshes.size());
+                editable.meshes.push_back(std::move(marker));
+                for (const auto& object : lot.objects) {
+                    if (object.resourceType != ts2::types::kSavedPerson) {
+                        continue;
+                    }
+                    const auto& header = object.state.header;
+                    const float lotX = header.location[1], lotY = header.location[0];  // (a position's x runs along the lot's y)
+                    const int storey = std::max(1, static_cast<int>(header.value1));
+                    ts2::scene::Instance instance;
+                    instance.mesh = markerMesh;
+                    instance.name = "sim-marker";
+                    instance.object = object.id;
+                    instance.part = ts2::scene::Part::Object;
+                    instance.level = ground + storey - 1;
+                    instance.lightGroup = ts2::scene::LightGroup::Sims;
+                    instance.transform = ts2::scene::Transform::at(lotX, lotY, editable.floorHeight ? editable.floorHeight(storey, lotX, lotY) : 0.0f, 0.0f);
+                    editable.instances.push_back(std::move(instance));
+                    ++markers;
+                }
+            }
+            std::printf("Sims: %zu instances filed under their object ids\n", simInstances);
             std::printf("floor grid: %d storeys, %zu heights; %zu Sim markers\n", editable.floorGridStoreys, editable.floorGrid.size(), markers);
         }
         const ts2::scene::Scene& scene = builder.scene();

@@ -31,7 +31,8 @@ namespace ts2::render {
 namespace {
 
 constexpr float kGuard = 3.0f;           // clip to this many times the screen's width and height
-constexpr float kZScale = 16777215.0f;   // 24-bit Z
+constexpr float kZScale = 65535.0f;      // 16-bit Z: gsKit makes the Z buffer 16 bits when the frame buffer is (the 24-bit values it was given wrapped)
+constexpr float kNearPlane = 0.5f;      // with so few bits the depth is n / distance: a near plane this far keeps objects a tenth of a tile apart apart
 constexpr std::size_t kMaxTrianglesPerPacket = 3000;  // nine quadwords each; a GIF tag counts at most 32767
 constexpr float kBlendedLightMapShare = 0.5f;
 
@@ -940,7 +941,9 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
 bool GsRenderer::draw(const Camera& camera) {
     frame_ = {};
     ++frameNumber_;
-    const FrameView f = FrameView::make(camera, gs_->Width, gs_->Height);
+    Camera view = camera;
+    view.nearPlane = kNearPlane;
+    const FrameView f = FrameView::make(view, gs_->Width, gs_->Height);
     // The last draw of the last frame may have masked Z writes (blended surfaces do); the clear writes Z as well and must be let.
     ad(gs_, GS_SETREG_ZBUF_1(gs_->ZBuffer / 8192, gs_->PSMZ, 0), GS_ZBUF_1);
     gsKit_clear(gs_, GS_SETREG_RGBAQ(static_cast<int>(clear_[0] * 255), static_cast<int>(clear_[1] * 255), static_cast<int>(clear_[2] * 255), 0x80, 0));

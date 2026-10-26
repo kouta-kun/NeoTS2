@@ -16,8 +16,10 @@ constexpr double kMaxTicksPerUpdate = 2;
 
 ConsoleLife::ConsoleLife(std::unique_ptr<ts2::sim::LotSimulation> sim, const ts2::scene::Scene& scene) : sim_(std::move(sim)) {
     for (std::size_t i = 0; i < scene.instances.size(); ++i) {
-        if (scene.instances[i].name == "sim-marker" && scene.instances[i].object != 0) {
-            markers_.emplace(scene.instances[i].object, i);
+        const auto& instance = scene.instances[i];
+        // The Sims' parts (and the markers of a scene baked with --markers) are the instances lit as Sims that are filed under an object id.
+        if (instance.lightGroup == ts2::scene::LightGroup::Sims && instance.object != 0) {
+            parts_.emplace_back(instance.object, i);
         }
     }
 }
@@ -39,7 +41,7 @@ void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRend
     if (!ticked || !scene.floorHeight) {
         return;
     }
-    for (const auto& [object, instance] : markers_) {
+    for (const auto& [object, instance] : parts_) {
         const ts2::sim::SimObject* sim = sim_->world().find(static_cast<std::int16_t>(object));
         if (sim == nullptr || sim->x == ts2::sim::kOffLot || sim->y == ts2::sim::kOffLot) {
             continue;
@@ -51,6 +53,14 @@ void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRend
         scene.instances[instance].level = scene.groundLevel + sim->level - 1;
         renderer.setPlace(instance, place);
     }
+}
+
+std::size_t ConsoleLife::simCount() const {
+    std::size_t sims = 0;
+    for (std::size_t i = 0; i < parts_.size(); ++i) {
+        sims += i == 0 || parts_[i].first != parts_[i - 1].first;
+    }
+    return sims;
 }
 
 std::string ConsoleLife::clockText() {
