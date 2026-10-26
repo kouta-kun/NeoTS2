@@ -372,7 +372,7 @@ int runConsoleLot(int argc, char** argv) {
                 return blob;
             },
             2 * 1024 * 1024);
-        renderer.setCacheBudgets(256 * 1024, 1536 * 1024);  // (the simulation has the rest of the heap)
+        renderer.setCacheBudgets(256 * 1024, 2048 * 1024);  // (the simulation has the rest of the heap)
         auto prepared = renderer.prepareBaked(scene, std::move(meshes));
         renderer.upload(std::move(prepared));
         memory("scene uploaded");
@@ -517,16 +517,16 @@ int runConsoleLot(int argc, char** argv) {
                 const auto& f = renderer.lastFrame();
                 sum.collect += f.collect, sum.uniforms += f.uniforms, sum.light += f.light, sum.vuBuild += f.vuBuild, sum.vuWait += f.vuWait, sum.expand += f.expand;
                 sum.transform += f.transform, sum.emit += f.emit, sum.state += f.state, sum.submit += f.submit;
-                sum.eeCorners += f.eeCorners, sum.vuCorners += f.vuCorners, sum.draws += f.draws, sum.uploads += f.uploads, sum.clipped += f.clipped, sum.litHits += f.litHits, sum.litMisses += f.litMisses;
+                sum.eeCorners += f.eeCorners, sum.vuCorners += f.vuCorners, sum.cacheHits += f.cacheHits, sum.draws += f.draws, sum.uploads += f.uploads, sum.clipped += f.clipped, sum.litHits += f.litHits, sum.litMisses += f.litMisses;
             }
             ++framesInProfile;
             if (seconds() - lastProfile >= 5.0) {  // (every few seconds, not every 60 frames: a console may draw a frame a second)
                 const double n = framesInProfile, ms = 1000.0 / n;
                 logf("neots2: profile %u frames in %.1f s, %.1f ms a frame: sim update %.1f, visibility %.1f, draw %.1f (collect %.1f, uniforms %.1f, light %.1f, vu build %.1f (texture %.1f, ee clip %.1f), vu wait %.1f,"
-                            " submit %.1f); %zu ee corners, %zu vu corners; %.0f draws, %.1f uploads, %.1f clipped, lit cache %zu hits %zu misses a frame\n",
+                            " submit %.1f); %zu ee corners, %zu vu corners; %.0f draws, %.1f uploads, %.1f clipped, lit cache %zu hits %zu misses, %zu chains from the cache a frame\n",
                             framesInProfile, seconds() - lastProfile, sumFrame * ms, sumUpdate * ms, sumVisible * ms, sumDraw * ms, sum.collect * ms, sum.uniforms * ms, sum.light * ms, sum.vuBuild * ms, sum.state * ms, sum.transform * ms,
                             sum.vuWait * ms, sum.submit * ms, sum.eeCorners / framesInProfile, sum.vuCorners / framesInProfile, static_cast<double>(sum.draws) / n, static_cast<double>(sum.uploads) / n, static_cast<double>(sum.clipped) / n,
-                            sum.litHits / framesInProfile, sum.litMisses / framesInProfile);
+                            sum.litHits / framesInProfile, sum.litMisses / framesInProfile, sum.cacheHits / framesInProfile);
                 sumUpdate = sumVisible = sumDraw = sumFrame = 0;
                 sum = {};
                 framesInProfile = 0;

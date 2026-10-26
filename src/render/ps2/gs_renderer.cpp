@@ -134,6 +134,7 @@ struct GsTexture {
     unsigned texelQw = 0, clutQw = 0;      // quadwords of each, as the GS takes them
     unsigned clutWidth = 0, clutHeight = 0;  // the palette's size as an image (8 x 2 or 16 x 16)
     bool resident = false;                 // its texels (and palette) are in VRAM at tex.Vram and tex.VramClut
+    std::uint32_t serial = 0;              // which texture this is (a new one in the place of a freed one has another), for the chains that name it
     unsigned vramBytes = 0;                // what it holds there, from tex.Vram
     ~GsTexture() {
         std::free(texels);
@@ -145,15 +146,6 @@ struct GsTexture {
 };
 
 
-struct GsRenderer::VuColors {
-    std::uint64_t generation = 0;  // the lighting's and the object's counts it was made with (see GsRenderer::touch)
-    unsigned corners = 0;
-    u8* rgba = nullptr;  // r, g, b, a/2 a corner, 16-byte aligned
-    ~VuColors() { std::free(rgba); }
-    VuColors() = default;
-    VuColors(const VuColors&) = delete;
-    VuColors& operator=(const VuColors&) = delete;
-};
 
 struct alignas(16) Qw {
     std::uint64_t lo, hi;
@@ -212,11 +204,13 @@ struct GsRenderer::VuSlot {
     std::vector<Qw> eeTags;
     u8* scratch = nullptr;     // lit colours of a draw that is not kept
     std::size_t scratchCapacity = 0;
-    VuSlot() {
+    explicit VuSlot(bool full = true) {
         header = static_cast<Qw*>(memalign(64, 8 * sizeof(Qw)));
         tags = static_cast<Qw*>(memalign(64, 2 * sizeof(Qw)));
         constants = static_cast<float*>(memalign(64, 10 * 16));
-        upload = static_cast<Qw*>(memalign(64, 14 * sizeof(Qw)));
+        if (full) {
+            upload = static_cast<Qw*>(memalign(64, 14 * sizeof(Qw)));
+        }
     }
     ~VuSlot() {
         std::free(header);
@@ -226,6 +220,28 @@ struct GsRenderer::VuSlot {
         std::free(chain);
         std::free(scratch);
     }
+};
+
+// The lit colours of one primitive of one instance, and with them (once the draw has been made) the whole VIF chain that sends it, so that a frame in which nothing about
+// the draw changed rewrites only its matrix and sends the chain again.
+struct GsRenderer::VuColors {
+    std::uint64_t generation = 0;  // the lighting's and the object's counts it was made with (see GsRenderer::touch)
+    unsigned corners = 0;
+    u8* rgba = nullptr;  // r, g, b, a/2 a corner, 16-byte aligned
+    // The chain: its own header, tags, constants and tags to send, valid while the texture it names is where it was.
+    std::unique_ptr<VuSlot> chain;
+    bool chainValid = false;
+    unsigned chainTags = 0, batches = 0;
+    std::size_t chainBytes = 0;     // what it holds, for the cache's budget
+    int imageIndex = -1;            // the scene image of its texture, -1 for none
+    const GsTexture* texture = nullptr;
+    std::uint32_t textureSerial = 0;
+    unsigned vram = 0;
+    Mat4 model;                     // the instance's matrix, as it was
+    ~VuColors() { std::free(rgba); }
+    VuColors() = default;
+    VuColors(const VuColors&) = delete;
+    VuColors& operator=(const VuColors&) = delete;
 };
 
 struct GsRenderer::Gpu {
@@ -261,9 +277,12 @@ namespace {
 
 // A texture from a baked image: its largest level, with alpha in the GS's range (0x80 is opaque) and an 8-bit palette
 // in the order the GS reads it (entries 8-15 and 16-23 of each 32 swapped).
+std::uint32_t g_textureSerial = 0;
+
 std::unique_ptr<GsTexture> makeTexture(std::span<const std::uint8_t> blob) {
     const content::ConsoleTextureView view = content::ConsoleTextureView::of(blob);
     auto t = std::make_unique<GsTexture>();
+    t->serial = ++g_textureSerial;
     const std::size_t texelBytes = content::ConsoleTexture::texelBytes(view.width, view.height, view.bits, 1);
     t->texels = static_cast<std::uint8_t*>(memalign(64, (texelBytes + 63) / 64 * 64));
     std::memcpy(t->texels, view.texels.data(), texelBytes);
@@ -631,6 +650,7 @@ void GsRenderer::tracef(const char* format, ...) const {
 void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend) {
     std::size_t sent = 0;
     for (const Draw& d : list) {
+        ++sent;
         const GpuPrimitive& p = *d.primitive;
         if (p.skinned || !gpu_->baked || p.firstVertex >= gpu_->soups.size()) {
             continue;
@@ -644,6 +664,59 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             continue;
         }
         const scene::Material* m = d.material;
+        // A draw made as it is now before (the same lit colours, place and texture in the same place in VRAM) is sent again from its kept chain, with only its matrix changed:
+        // none of the work of the uniforms, the colours, the texture and the chain.
+        const auto drawIndex = static_cast<std::size_t>(d.instance - instances_.data());
+        const std::uint64_t drawKey = (static_cast<std::uint64_t>(drawIndex) << 32) | p.firstVertex;
+        if (batchSync_ == 0) {
+            if (const auto hit = litVu_.find(drawKey); hit != litVu_.end() && hit->second->chainValid) {
+                VuColors& vc = *hit->second;
+                const std::uint64_t now_ = lightGen_ * 0x9E3779B97F4A7C15ull + (drawIndex < instanceGen_.size() ? instanceGen_[drawIndex] : 0u);
+                bool same = vc.generation == now_ && vc.corners == soup->corners;
+                if (same && vc.imageIndex >= 0) {
+                    const GsTexture* tex = static_cast<std::size_t>(vc.imageIndex) < gpu_->textures.size() ? gpu_->textures[static_cast<std::size_t>(vc.imageIndex)].get() : nullptr;
+                    same = tex != nullptr && tex == vc.texture && tex->serial == vc.textureSerial && tex->resident && static_cast<unsigned>(tex->tex.Vram) == vc.vram;
+                    if (same) {
+                        gpu_->lastUsed[static_cast<std::size_t>(vc.imageIndex)] = frameNumber_;
+                    }
+                }
+                if (same) {
+                    const double h0 = now();
+                    const Mat4 mvp = f.viewProjection * vc.model;
+                    Mat4 guarded = mvp;
+                    for (int k = 0; k < 8; ++k) {
+                        guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
+                    }
+                    if (boxInView(guarded, p.low, p.high) == InView::Inside) {
+                        const auto& r = mvp.m;
+                        float* c = vc.chain->constants;
+                        for (int k = 0; k < 3; ++k) {
+                            const float scale = (soup->hi[k] - soup->lo[k]) / 65535.0f;
+                            for (int row = 0; row < 4; ++row) {
+                                c[k * 4 + row] = r[static_cast<std::size_t>(row * 4 + k)] * scale;
+                            }
+                        }
+                        for (int row = 0; row < 4; ++row) {
+                            c[12 + row] = r[static_cast<std::size_t>(row * 4)] * soup->lo[0] + r[static_cast<std::size_t>(row * 4 + 1)] * soup->lo[1] +
+                                          r[static_cast<std::size_t>(row * 4 + 2)] * soup->lo[2] + r[static_cast<std::size_t>(row * 4 + 3)];
+                        }
+                        SyncDCache(c, c + 16);
+                        frame_.vuBuild += now() - h0;
+                        const double w0 = now();
+                        waitVifDma("before a draw", sent - 1);
+                        dma_channel_send_chain(DMA_CHANNEL_VIF1, vc.chain->chain, 0, DMA_FLAG_TRANSFERTAG, 0);
+                        frame_.vuWait += now() - w0;
+                        ++frame_.draws;
+                        ++frame_.cacheHits;
+                        ++frame_.litHits;
+                        frame_.vertices += soup->corners;
+                        frame_.vuCorners += soup->corners;
+                        frame_.vuBatches += vc.batches;
+                        continue;
+                    }
+                }
+            }
+        }
         const double u0 = now();
         const DrawUniforms u = FramePlan::uniformsFor(*this, *this, f, d, blend);
         frame_.uniforms += now() - u0;
@@ -656,6 +729,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         // The corners' lit colours (r, g, b and half the alpha, as the GS reads them): kept while the lights, place and material stay as they are.
         double t0 = now();
         const u8* colours = nullptr;
+        VuColors* vcEntry = nullptr;  // the kept colours of this draw, if they are kept
         {
             const auto instanceIndex = static_cast<std::size_t>(d.instance - instances_.data());
             const std::uint64_t generation = lightGen_ * 0x9E3779B97F4A7C15ull + (instanceIndex < instanceGen_.size() ? instanceGen_[instanceIndex] : 0u);
@@ -664,11 +738,12 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             frame_.vertices += corners;
             if (found != litVu_.end() && found->second->generation == generation && found->second->corners == corners) {
                 colours = found->second->rgba;
+                vcEntry = found->second.get();
                 ++frame_.litHits;
             } else {
                 ++frame_.litMisses;
                 if (found != litVu_.end()) {
-                    litVuBytes_ -= std::size_t{found->second->corners} * 4;
+                    litVuBytes_ -= std::size_t{found->second->corners} * 4 + found->second->chainBytes;
                     litVu_.erase(found);
                 }
                 u8* destination = nullptr;
@@ -737,7 +812,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                 colours = destination;
                 if (keep) {
                     litVuBytes_ += std::size_t{corners} * 4;
-                    litVu_[key] = std::move(keep);
+                    vcEntry = (litVu_[key] = std::move(keep)).get();
                 }
             }
         }
@@ -983,9 +1058,31 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             continue;
         }
 
+        // Built where it can be kept (the kept colours' entry, when the texture is already in VRAM and the batches may not overlap), else in the slot all draws share.
+        const std::size_t chainEstimate = 8 * sizeof(Qw) + 2 * sizeof(Qw) + 160 + (9 + std::size_t{fullBatches + 1} * 8) * sizeof(VifTag) + 128;
+        const bool keepChain = vcEntry != nullptr && !upload && batchSync_ == 0 && (vcEntry->chain || litVuBytes_ + chainEstimate <= litVuBudget_);
+        VuSlot* built = &slot;
+        if (keepChain) {
+            if (!vcEntry->chain) {
+                vcEntry->chain = std::make_unique<VuSlot>(false);
+                if (vcEntry->chain->header == nullptr || vcEntry->chain->tags == nullptr || vcEntry->chain->constants == nullptr) {
+                    vcEntry->chain.reset();
+                }
+            }
+            if (vcEntry->chain) {
+                built = vcEntry->chain.get();
+                std::memcpy(built->header, slot.header, 8 * sizeof(Qw));
+                std::memcpy(built->tags, slot.tags, 2 * sizeof(Qw));
+                SyncDCache(built->header, built->header + 8);
+                SyncDCache(built->tags, built->tags + 2);
+            }
+        }
+        VuSlot& out = *built;
+        Qw* const outHeader = out.header;
+
         // The constants: the matrix with the positions' range folded in, and the screen, texture-coordinate and clip scales.
         const auto& r = mvp.m;
-        float* c = slot.constants;
+        float* c = out.constants;
         for (int k = 0; k < 3; ++k) {
             const float scale = (soup->hi[k] - soup->lo[k]) / 65535.0f;
             for (int row = 0; row < 4; ++row) {
@@ -1006,20 +1103,23 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
 
         // The chain: the constants, then for each batch the header and tag, the three arrays, and the start of the program.
         const std::size_t tagCount = 9 + std::size_t{fullBatches + 1} * 8;
-        if (slot.chainCapacity < tagCount) {
-            std::free(slot.chain);
-            slot.chainCapacity = tagCount + tagCount / 4;
-            slot.chain = static_cast<VifTag*>(memalign(64, slot.chainCapacity * sizeof(VifTag)));
+        if (out.chainCapacity < tagCount) {
+            std::free(out.chain);
+            out.chainCapacity = tagCount + (built == &slot ? tagCount / 4 : 0);
+            out.chain = static_cast<VifTag*>(memalign(64, out.chainCapacity * sizeof(VifTag)));
         }
-        if (slot.chain == nullptr) {
-            slot.chainCapacity = 0;
+        if (out.chain == nullptr) {
+            out.chainCapacity = 0;
+            if (built != &slot) {
+                vcEntry->chain.reset();
+            }
             continue;
         }
         unsigned t_ = 0;
-        VifTag* chain = slot.chain;
+        VifTag* chain = out.chain;
         addUpload(chain, t_);
         chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlushe)};  // (the last program has read the constants it is about to be given new ones of)
-        chain[t_++] = {dmaRef(slot.constants, 10), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, false), 10, kUnpackV4_32)};
+        chain[t_++] = {dmaRef(out.constants, 10), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, false), 10, kUnpackV4_32)};
         for (unsigned b = 0; b <= fullBatches; ++b) {
             const unsigned n = b < fullBatches ? kBatchCorners : remainder;
             if (n == 0) {
@@ -1027,8 +1127,8 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             }
             const unsigned first = b * kBatchCorners;
             const unsigned base = kBufferBase[bufferTurn_++ % 3];
-            chain[t_++] = {dmaRef(header, 7), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(base, false, false), 7, kUnpackV4_32)};
-            chain[t_++] = {dmaRef(&slot.tags[b < fullBatches ? 0 : 1], 1), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + 7, false, false), 1, kUnpackV4_32)};
+            chain[t_++] = {dmaRef(outHeader, 7), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(base, false, false), 7, kUnpackV4_32)};
+            chain[t_++] = {dmaRef(&out.tags[b < fullBatches ? 0 : 1], 1), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + 7, false, false), 1, kUnpackV4_32)};
             chain[t_++] = {dmaRef(&soup->positions[first * 4], n / 2), vifCode(3 | (1 << 8), 0, kVifStcycl), vifCode(unpackAt(base + kHeaderQw + 2, true, false), n, kUnpackV4_16)};
             chain[t_++] = {dmaRef(&uvArray[first * 2], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 0, true, false), n, kUnpackV2_16)};
             chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 1, true, false), n, kUnpackV4_8)};
@@ -1045,12 +1145,26 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         }
         chain[t_++] = {7ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifNop)};
         frame_.vuCorners += corners;
-        SyncDCache(slot.header, slot.header + 8);
-        SyncDCache(slot.tags, slot.tags + 2);
-        SyncDCache(slot.constants, slot.constants + 40);
+        SyncDCache(out.header, out.header + 8);
+        SyncDCache(out.tags, out.tags + 2);
+        SyncDCache(out.constants, out.constants + 40);
         SyncDCache(chain, chain + t_);
         frame_.vuBuild += now() - t0;
         t0 = now();
+        if (built != &slot) {  // (kept: what the next frame needs to know to send it as it is)
+            VuColors& vc = *vcEntry;
+            const std::size_t bytes = chainEstimate - 128 + std::size_t{out.chainCapacity - tagCount} * sizeof(VifTag);
+            litVuBytes_ += bytes - vc.chainBytes;
+            vc.chainBytes = bytes;
+            vc.chainValid = true;
+            vc.chainTags = t_;
+            vc.batches = fullBatches + (remainder != 0 ? 1 : 0);
+            vc.imageIndex = texture ? u.samplers[0].texture.index : -1;
+            vc.texture = texture;
+            vc.textureSerial = texture ? texture->serial : 0;
+            vc.vram = texture ? static_cast<unsigned>(texture->tex.Vram) : 0;
+            vc.model = fromRows(vu.model);
+        }
         if (frameNumber_ <= 3) {
             unsigned bad = 0, wanted = 0;
             if (const char* why = chainMismatch(chain, t_, bad, wanted)) {

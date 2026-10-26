@@ -106,3 +106,17 @@ the overlap: 0 none, 1 the program may not overlap the next unpack, 2 fully; 1 a
 
 On a console the standard output stopped reaching anything after a few lines (so did `ps2link`'s tty); everything the program says now goes through `logf` / the renderer's trace hook straight to a 4 KB ring
 and `host:neots2.log`. The profile line is printed every 5 seconds, not every 60 frames.
+
+## The first real-PS2 profile (mode 0), and caching each draw's chain
+
+A PS2 over ps2link, Lot 68 with the simulation, camera moved by hand (`prof.txt`): 100 to 265 ms a frame (4 to 10 fps); steady and idle 96.6 ms (draw 86: vu build 41 of which EE clip 19, vu wait 10, uniforms 6,
+collect 6, submit 9, light 2.6); light spikes of 68 to 121 ms when a view change left 32 to 40 lit-colour misses (~3 ms each); texture uploads 17 to 37 ms; the ticks that were slow in PCSX2 (110, 111, 119, 120,
+123) took 176 to 539 ms on the console. PCSX2's numbers were within about 1.5x of the console's for this work, which is the only comparison there is. The VU1's wait is 10 to 24 ms: the serial flush per batch
+costs little because the EE, not the VU1, is the limit.
+
+`-m 1` (the VIF waits for the program, not the GIF) stopped again with ER0 and the UV unpack of a 48-corner batch with `NUM` 1: an unpack that overlaps a GIF transfer is what does not work, so mode 0 stays.
+
+**Chain cache.** A draw made as it is now before (same lit colours, same place, its texture in the same place in VRAM, inside the guard band) is sent again from its kept chain (header, GIF tags, constants and the VIF tags
+live in its `VuColors` entry, `batchSync_` 0 only: the batches' buffers are fixed in the chain), with only its 16 matrix floats rewritten. It skips the uniforms, the colours, the texture and the chain.
+PCSX2, the storey view with Sims: 120-140 -> 84 ms a frame; the top storey: 125 -> 51 ms (uniforms 7.4 -> 0, light 22 -> 0, vu build 33 -> 13). The kept chains count in the lit-colour cache's budget (now 2 MiB).
+Left: collect 4.7 to 7, vu build 13 (the matrix and a cache flush a draw), vu wait 10, submit 7 to 13, and the EE clip of ~10 draws near the camera (3,000 corners, 17 ms).
