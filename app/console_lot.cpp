@@ -37,6 +37,10 @@
 extern "C" {
 volatile unsigned g_oomArena = 0, g_oomUsed = 0, g_oomFree = 0, g_oomLargest = 0, g_oomStage = 0, g_consoleStopAt = 0, g_consoleStage = 0, g_consoleFrame = 0, g_consoleTicks = 0, g_consoleHeap = 0;
 char g_consoleError[256] = {0};
+// What the program has printed or traced, the last 4 KB of it, in memory: ps2client dumpmem can read it from a console that no longer prints anything (tools/ps2test/ps2_dump.sh).
+// The text is at g_traceRing[g_traceTotal % 4096] and after it, then from the start to there, once g_traceTotal passes 4096.
+char g_traceRing[4096] = {0};
+volatile unsigned g_traceTotal = 0;
 }
 
 #ifdef NEOTS2_PS2_DEBUG
@@ -234,6 +238,27 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
 bool g_hostLog = false;
 bool g_inHostLog = false;
 
+void traceToRing(const void* data, std::size_t size) {
+    const char* bytes = static_cast<const char*>(data);
+    unsigned total = g_traceTotal;
+    for (std::size_t i = 0; i < size; ++i) {
+        g_traceRing[total++ % sizeof g_traceRing] = bytes[i];
+    }
+    g_traceTotal = total;
+}
+
+void appendHostLog(const void* data, std::size_t size) {
+    if (!g_hostLog || g_inHostLog) {
+        return;
+    }
+    g_inHostLog = true;  // (the file's own writes pass through __wrap__write too)
+    if (std::FILE* f = std::fopen("host:neots2.log", "ab")) {
+        std::fwrite(data, 1, size, f);
+        std::fclose(f);
+    }
+    g_inHostLog = false;
+}
+
 void teeToHost() {
     if (std::FILE* f = std::fopen("host:neots2.log", "wb")) {
         std::fclose(f);
@@ -311,6 +336,11 @@ int runConsoleLot(int argc, char** argv) {
         memory("scene head read");
         loadingScreen(0.1f, "reading the scene");
         ts2::render::GsRenderer renderer(gs);
+        renderer.setTrace([](const char* text) {
+            const std::string line = std::string(text) + "\n";
+            traceToRing(line.data(), line.size());
+            appendHostLog(line.data(), line.size());
+        });
         renderer.setImageSource(
             [file](const ts2::scene::Image& image) {
                 std::vector<std::uint8_t> blob(image.consoleSize);
@@ -508,14 +538,12 @@ int runConsoleLot(int argc, char** argv) {
 extern "C" {
 ssize_t __real__write(int fd, const void* data, size_t size);
 ssize_t __wrap__write(int fd, const void* data, size_t size) {
+    if (fd == 1 || fd == 2) {
+        app::traceToRing(data, size);  // (first: whatever happens to the rest)
+    }
     const ssize_t written = __real__write(fd, data, size);
-    if ((fd == 1 || fd == 2) && app::g_hostLog && !app::g_inHostLog) {
-        app::g_inHostLog = true;  // (the file's own writes pass through here too)
-        if (std::FILE* f = std::fopen("host:neots2.log", "ab")) {
-            std::fwrite(data, 1, size, f);
-            std::fclose(f);
-        }
-        app::g_inHostLog = false;
+    if (fd == 1 || fd == 2) {
+        app::appendHostLog(data, size);
     }
     return written;
 }

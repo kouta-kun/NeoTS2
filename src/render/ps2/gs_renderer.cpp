@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -551,11 +553,24 @@ void GsRenderer::waitVuIdle() const {
     }
 }
 
+void GsRenderer::tracef(const char* format, ...) const {
+    char text[200];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(text, sizeof text, format, args);
+    va_end(args);
+    if (trace_) {
+        trace_(text);
+    } else {
+        std::printf("%s\n", text);
+    }
+}
+
 void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend) {
     std::size_t sent = 0;
     for (const Draw& d : list) {
         if (frameNumber_ == 1 && sent++ % 50 == 0) {
-            std::printf("gs: frame 1: draw %zu of %zu (list %d)\n", sent - 1, list.size(), blend);
+            tracef("gs: frame 1: draw %zu of %zu (list %d)", sent - 1, list.size(), blend);
         }
         const GpuPrimitive& p = *d.primitive;
         if (p.skinned || !gpu_->baked || p.firstVertex >= gpu_->soups.size()) {
@@ -997,7 +1012,7 @@ std::size_t GsRenderer::preload(const Camera& camera, const std::function<void(s
             progress(++done, images.size());
         }
     }
-    std::printf("gs: preload: %zu images, %zu without a texture (read failed or none), %zu bytes of textures in memory\n", images.size(), failed, gpu_->resident);
+    tracef("gs: preload: %zu images, %zu without a texture (read failed or none), %zu bytes of textures in memory", images.size(), failed, gpu_->resident);
     return images.size();
 }
 
@@ -1013,16 +1028,16 @@ bool GsRenderer::draw(const Camera& camera) {
     // The clear goes out and is done before anything is kicked from the VU1 (two paths into the GIF are not ordered against each other).
     const bool trace = frameNumber_ <= 2;  // (the first frames say where they are: a console that stops leaves the last of these)
     if (trace) {
-        std::printf("gs: frame %zu: clearing\n", frameNumber_);
+        tracef("gs: frame %zu: clearing", frameNumber_);
     }
     gsKit_queue_exec(gs_);
     dmaKit_wait_fast();
     if (trace) {
-        std::printf("gs: frame %zu: clear sent, waiting for the GS to finish it\n", frameNumber_);
+        tracef("gs: frame %zu: clear sent, waiting for the GS to finish it", frameNumber_);
     }
     gsKit_finish();
     if (trace) {
-        std::printf("gs: frame %zu: cleared\n", frameNumber_);
+        tracef("gs: frame %zu: cleared", frameNumber_);
     }
     if (drawScene_ && gpu_) {
         std::vector<Draw> opaque, layers, blended;
@@ -1033,17 +1048,17 @@ bool GsRenderer::draw(const Camera& camera) {
         const auto imageOf = [](const Draw& d) { return d.material ? d.material->image : -1; };
         std::stable_sort(opaque.begin(), opaque.end(), [&](const Draw& a, const Draw& b) { return a.layer != b.layer ? a.layer < b.layer : imageOf(a) < imageOf(b); });
         if (trace) {
-            std::printf("gs: frame %zu: %zu opaque, %zu layered, %zu blended draws\n", frameNumber_, opaque.size(), layers.size(), blended.size());
+            tracef("gs: frame %zu: %zu opaque, %zu layered, %zu blended draws", frameNumber_, opaque.size(), layers.size(), blended.size());
         }
         drawListVu(f, opaque, 0);
         drawListVu(f, layers, 1);
         drawListVu(f, blended, 1);
         if (trace) {
-            std::printf("gs: frame %zu: all draws sent, waiting for the VU1 and the GS\n", frameNumber_);
+            tracef("gs: frame %zu: all draws sent, waiting for the VU1 and the GS", frameNumber_);
         }
         waitVuIdle();
         if (trace) {
-            std::printf("gs: frame %zu: idle\n", frameNumber_);
+            tracef("gs: frame %zu: idle", frameNumber_);
         }
     }
     frame_.textureBytes = gpu_ ? gpu_->resident : 0;
@@ -1053,7 +1068,7 @@ bool GsRenderer::draw(const Camera& camera) {
     gsKit_sync_flip(gs_);
     frame_.submit = now() - s0;
     if (trace) {
-        std::printf("gs: frame %zu: shown\n", frameNumber_);
+        tracef("gs: frame %zu: shown", frameNumber_);
     }
     return true;
 }

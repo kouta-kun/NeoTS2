@@ -47,6 +47,9 @@ public:
     // Reads the textures the next draw from `camera` will need (each is read when first drawn otherwise, all of them inside that one draw): `progress` is called
     // with how many are in and how many there are. Returns how many.
     std::size_t preload(const Camera& camera, const std::function<void(std::size_t, std::size_t)>& progress);
+    // Where the first frames say what they are doing (a line at a time, without a newline): to a printf if there is none. A console's printed output can stop reaching
+    // the PC, so the program points this at memory it can be read from.
+    void setTrace(std::function<void(const char*)> trace) { trace_ = std::move(trace); }
     [[nodiscard]] bool drawToFile(const Camera&, unsigned, unsigned, const std::filesystem::path&) override { return false; }
     [[nodiscard]] std::optional<scene::Image> drawInstancesToImage(const Camera&, unsigned, unsigned, const scene::ObjectLighting&) override {
         return std::nullopt;
@@ -110,6 +113,8 @@ private:
     [[nodiscard]] bool skinReady(std::uint32_t) const override { return false; }
 
     void drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend);
+    void tracef(const char* format, ...) const __attribute__((format(printf, 2, 3)));
+    std::function<void(const char*)> trace_;
     void initVu();
     void waitVuIdle() const;
     // The texture of scene image `index`, read and made when it is first drawn; null when there is none.
