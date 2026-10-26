@@ -1,6 +1,6 @@
 ; VU1 microprogram for triangle soup: three corners a triangle, no indices. See gs_renderer.cpp (drawListVu) for how it is fed.
 ;
-; Per batch the VIF has unpacked, into the double buffer at TOP:
+; Per batch the VIF has unpacked, into the buffer at ITOP (one of three: see gs_renderer.cpp, kBufferBase):
 ;   +0 .. +6   the GS state packet (a GIF tag for A+D, six register writes)
 ;   +7         the GIF tag of the vertices (NLOOP = the number of corners)
 ;   +8 + 3 i   corner i: +0 its texture coordinates (u, v as integers), +1 its colour (r, g, b, a as integers),
@@ -27,7 +27,7 @@ VU1Soup_CodeStart:
          NOP                                        lq            VF08,7(VI00)
          NOP                                        lq            VF09,8(VI00)
          NOP                                        lq            VF10,9(VI00)
-         NOP                                        xtop          VI02
+         NOP                                        xitop         VI02
          NOP                                        ilw.x         VI07,7(VI02)
          NOP                                        iaddiu        VI03,VI02,8
          NOP                                        fcset         0

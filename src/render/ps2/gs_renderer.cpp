@@ -488,11 +488,15 @@ namespace {
 namespace {
 
 constexpr unsigned kHeaderQw = 8;    // the GS state packet (7 quadwords) and the vertices' GIF tag
-constexpr unsigned kBatchCorners = 156;  // corners a batch: the header and three quadwords each fill one of two buffers in the VU memory
-constexpr unsigned kBufferQw = 476;      // kHeaderQw + 3 * kBatchCorners
+constexpr unsigned kBatchCorners = 108;  // corners a batch: the header and three quadwords each fill one of three buffers in the VU memory
+constexpr unsigned kBufferQw = 332;      // kHeaderQw + 3 * kBatchCorners
+// Three buffers, not two: the VU1 transforms a batch where it was unpacked and kicks it, and the GIF reads it from there for as long as the GS takes. The VIF unpacks the
+// next batch as soon as the program for this one starts, so with two buffers it writes the buffer whose kick may still be streaming (a console stalls; the emulator copies a
+// kick at once and never shows it). The kick of a program waits for the one before it, so a buffer is free again once the program after its own has been started.
+constexpr unsigned kBufferBase[3] = {16, 16 + kBufferQw, 16 + 2 * kBufferQw};
 
 enum : std::uint32_t {
-    kVifNop = 0x00, kVifStcycl = 0x01, kVifFlusha = 0x13, kVifMscal = 0x14,
+    kVifNop = 0x00, kVifStcycl = 0x01, kVifItop = 0x04, kVifFlushe = 0x10, kVifFlusha = 0x13, kVifMscal = 0x14,
     kUnpackV2_16 = 0x65, kUnpackV4_32 = 0x6C, kUnpackV4_16 = 0x6D, kUnpackV4_8 = 0x6E,
 };
 
@@ -520,12 +524,6 @@ void GsRenderer::initVu() {
     const u32 size = packet2_utils_get_packet_size_for_program(&VU1Soup_CodeStart, &VU1Soup_CodeEnd) + 1;
     packet2_t* p = packet2_create(size, P2_TYPE_NORMAL, P2_MODE_CHAIN, 1);
     packet2_vif_add_micro_program(p, 0, &VU1Soup_CodeStart, &VU1Soup_CodeEnd);
-    packet2_utils_vu_add_end_tag(p);
-    dma_channel_send_packet2(p, DMA_CHANNEL_VIF1, 1);
-    dma_channel_wait(DMA_CHANNEL_VIF1, 0);
-    packet2_free(p);
-    p = packet2_create(1, P2_TYPE_NORMAL, P2_MODE_CHAIN, 1);
-    packet2_utils_vu_add_double_buffer(p, 16, kBufferQw);
     packet2_utils_vu_add_end_tag(p);
     dma_channel_send_packet2(p, DMA_CHANNEL_VIF1, 1);
     dma_channel_wait(DMA_CHANNEL_VIF1, 0);
@@ -946,7 +944,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         std::memcpy(&c[16], tables, sizeof tables);
 
         // The chain: the constants, then for each batch the header and tag, the three arrays, and the start of the program.
-        const std::size_t tagCount = 8 + std::size_t{fullBatches + 1} * 6;
+        const std::size_t tagCount = 9 + std::size_t{fullBatches + 1} * 7;
         if (slot.chainCapacity < tagCount) {
             std::free(slot.chain);
             slot.chainCapacity = tagCount + tagCount / 4;
@@ -959,6 +957,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         unsigned t_ = 0;
         VifTag* chain = slot.chain;
         addUpload(chain, t_);
+        chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlushe)};  // (the last program has read the constants it is about to be given new ones of)
         chain[t_++] = {dmaRef(slot.constants, 10), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, false), 10, kUnpackV4_32)};
         for (unsigned b = 0; b <= fullBatches; ++b) {
             const unsigned n = b < fullBatches ? kBatchCorners : remainder;
@@ -966,11 +965,13 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                 break;
             }
             const unsigned first = b * kBatchCorners;
-            chain[t_++] = {dmaRef(header, 7), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(0, false, true), 7, kUnpackV4_32)};
-            chain[t_++] = {dmaRef(&slot.tags[b < fullBatches ? 0 : 1], 1), vifCode(0, 0, kVifNop), vifCode(unpackAt(7, false, true), 1, kUnpackV4_32)};
-            chain[t_++] = {dmaRef(&soup->positions[first * 4], n / 2), vifCode(3 | (1 << 8), 0, kVifStcycl), vifCode(unpackAt(kHeaderQw + 2, true, true), n, kUnpackV4_16)};
-            chain[t_++] = {dmaRef(&uvArray[first * 2], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(kHeaderQw + 0, true, true), n, kUnpackV2_16)};
-            chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(kHeaderQw + 1, true, true), n, kUnpackV4_8)};
+            const unsigned base = kBufferBase[bufferTurn_++ % 3];
+            chain[t_++] = {dmaRef(header, 7), vifCode(0x0101, 0, kVifStcycl), vifCode(unpackAt(base, false, false), 7, kUnpackV4_32)};
+            chain[t_++] = {dmaRef(&slot.tags[b < fullBatches ? 0 : 1], 1), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + 7, false, false), 1, kUnpackV4_32)};
+            chain[t_++] = {dmaRef(&soup->positions[first * 4], n / 2), vifCode(3 | (1 << 8), 0, kVifStcycl), vifCode(unpackAt(base + kHeaderQw + 2, true, false), n, kUnpackV4_16)};
+            chain[t_++] = {dmaRef(&uvArray[first * 2], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 0, true, false), n, kUnpackV2_16)};
+            chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 1, true, false), n, kUnpackV4_8)};
+            chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(base, 0, kVifItop)};  // (the program finds its buffer by ITOP)
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifMscal)};
             ++frame_.vuBatches;
         }

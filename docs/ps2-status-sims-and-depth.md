@@ -83,3 +83,14 @@ one by one through `host:`, each a round trip over the network on a console). Wh
 drawn right after the screen starts (title, the stage in a built-in 5x7 font, a bar), the stages of `LotSimulation::load` named through `LotSimulation::loadPhase`
 (`reading want definitions`, `reading the lot`, `building the objects` ~9 s in PCSX2, `walls and rooms` ~5 s, `reading the neighborhood`, `want tuning`, `starting the objects`), a heartbeat from the object
 scripts, and the same lines printed to the log. If a real console stops with a bar on screen, the stage names the place.
+
+## The first real-PS2 stall: a VU1 buffer the GIF was still reading
+
+On a console the first frame stopped inside the opaque list: the trace (`gs: d282: chain sent`, then `gs: d283: ... waiting for the DMA` and nothing more) showed the VIF1 DMA of a draw never finished.
+PCSX2 does not show it. The microprogram transformed a batch where the VIF had unpacked it (a double buffer chosen by TOPS) and ended with `xgkick` on that buffer; the GIF then reads the buffer
+for as long as the GS takes (it can wait on the GS), but the VIF unpacks the next batch as soon as the program for this one has started, so it writes the buffer whose kick may still be streaming
+two batches back. A packet changed under the GIF leaves it waiting for data that never comes, the next `xgkick` waits for it, MSCAL waits for the program, and the DMA never ends. The emulator copies a kick at once.
+
+Fixed with three buffers of 108 corners (`kBufferBase`; the program finds its buffer with `xitop`, the chain sets ITOP before each MSCAL and unpacks at explicit addresses). A kick waits for the one
+before it, so by the time the program after a buffer's own has been started that buffer is free to be written again; FLUSHE before the constants keeps a program from losing the constants it is
+loading. In PCSX2 the pictures and the frame time are unchanged. Not yet confirmed on a console. The trace of draws 240 to 330 of frame 1 is still in `drawListVu` for that.

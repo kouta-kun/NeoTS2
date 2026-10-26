@@ -123,6 +123,7 @@ private:
     ImageSource imageSource_;
     std::size_t textureBudget_ = 6 * 1024 * 1024;
     std::size_t frameNumber_ = 0;
+    unsigned bufferTurn_ = 0;  // which of the VU1's three buffers the next batch goes in (see kBufferBase)
     GSGLOBAL* gs_;
     std::unique_ptr<Gpu> gpu_;
     std::vector<std::uint8_t> litColors_;
