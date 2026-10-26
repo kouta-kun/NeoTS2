@@ -164,6 +164,42 @@ struct alignas(16) VifTag {  // a DMA tag and the two VIF codes that go with it
     std::uint32_t vif0, vif1;
 };
 
+// Checks a chain as the VIF will take it: the data of each tag must be exactly what the VIF codes in that tag (UNPACK and DIRECT) ask for. A real VIF1 stops with ER0 (a
+// DMA tag that does not match its VIF code) when one is not, where the emulator carries on. Returns a description of the first tag that is not, or null.
+const char* chainMismatch(const VifTag* chain, unsigned count, unsigned& badTag, unsigned& wanted) {
+    unsigned cl = 1, wl = 1;
+    for (unsigned i = 0; i < count; ++i) {
+        const unsigned qwc = static_cast<unsigned>(chain[i].tag & 0xFFFF), id = static_cast<unsigned>((chain[i].tag >> 28) & 7);
+        unsigned expected = 0;
+        for (const std::uint32_t code : {chain[i].vif0, chain[i].vif1}) {
+            const unsigned cmd = code >> 24, imm = code & 0xFFFF, num = (code >> 16) & 0xFF;
+            if (cmd == 0x01) {
+                cl = imm & 0xFF;
+                wl = imm >> 8;
+            } else if (cmd >= 0x60) {
+                const unsigned vn = (cmd >> 2) & 3, vl = cmd & 3;
+                const unsigned element = vl == 0 ? 32 : vl == 1 ? 16 : vl == 2 ? 8 : 5;
+                const unsigned vectorBits = vn == 3 && vl == 3 ? 16 : (vn + 1) * element;
+                const unsigned vectors = num == 0 ? 256 : num;
+                if (wl > cl) {  // a filling write takes its data differently: not made here
+                    badTag = i;
+                    wanted = 0;
+                    return "a filling write";
+                }
+                expected += (vectorBits * vectors + 127) / 128;
+            } else if (cmd == 0x50 || cmd == 0x51) {
+                expected += imm == 0 ? 65536 : imm;
+            }
+        }
+        if (expected != qwc && id != 7) {
+            badTag = i;
+            wanted = expected;
+            return "tag data is not what its VIF codes ask for";
+        }
+    }
+    return nullptr;
+}
+
 // What one draw's chain is built in, so that the EE can build the next while the DMA sends this one.
 struct GsRenderer::VuSlot {
     Qw* header = nullptr;      // 7 quadwords of GS state
@@ -499,7 +535,7 @@ constexpr unsigned kBufferQw = 332;      // kHeaderQw + 3 * kBatchCorners
 constexpr unsigned kBufferBase[3] = {16, 16 + kBufferQw, 16 + 2 * kBufferQw};
 
 enum : std::uint32_t {
-    kVifNop = 0x00, kVifStcycl = 0x01, kVifItop = 0x04, kVifFlushe = 0x10, kVifFlusha = 0x13, kVifMscal = 0x14,
+    kVifNop = 0x00, kVifStcycl = 0x01, kVifItop = 0x04, kVifFlushe = 0x10, kVifFlush = 0x11, kVifFlusha = 0x13, kVifMscal = 0x14,
     kUnpackV2_16 = 0x65, kUnpackV4_32 = 0x6C, kUnpackV4_16 = 0x6D, kUnpackV4_8 = 0x6E,
 };
 
@@ -813,6 +849,9 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         for (int k = 0; k < 8; ++k) {
             guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
         }
+        if (frameNumber_ == 1 && sent > 90) {
+            tracef("gs: c%zu %u", sent - 1, corners);
+        }
         if (frameNumber_ == 1 && sent <= 90) {
             tracef("gs: d%zu part %d obj %u corners %u tex %d psm %d %ux%u upload %d clut %d alpha %d blend %d inview %d", sent - 1, static_cast<int>(d.instance->part), static_cast<unsigned>(d.instance->object), corners,
                    texture ? 1 : 0, texture ? static_cast<int>(texture->tex.PSM) : -1, texture ? static_cast<unsigned>(texture->tex.Width) : 0u, texture ? static_cast<unsigned>(texture->tex.Height) : 0u,
@@ -972,7 +1011,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         std::memcpy(&c[16], tables, sizeof tables);
 
         // The chain: the constants, then for each batch the header and tag, the three arrays, and the start of the program.
-        const std::size_t tagCount = 9 + std::size_t{fullBatches + 1} * 7;
+        const std::size_t tagCount = 9 + std::size_t{fullBatches + 1} * 8;
         if (slot.chainCapacity < tagCount) {
             std::free(slot.chain);
             slot.chainCapacity = tagCount + tagCount / 4;
@@ -1001,6 +1040,9 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 1, true, false), n, kUnpackV4_8)};
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(base, 0, kVifItop)};  // (the program finds its buffer by ITOP)
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifMscal)};
+            // One batch at a time: the VIF waits for the program to end and for the GIF to take what it kicked before it unpacks the next. (A trial: a console stopped in the
+            // first draw with more than one batch; with this nothing overlaps, and if it still stops the cause is not a race.)
+            chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlush)};
             ++frame_.vuBatches;
         }
         chain[t_++] = {7ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifNop)};
@@ -1011,6 +1053,13 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         SyncDCache(chain, chain + t_);
         frame_.vuBuild += now() - t0;
         t0 = now();
+        if (frameNumber_ <= 3) {
+            unsigned bad = 0, wanted = 0;
+            if (const char* why = chainMismatch(chain, t_, bad, wanted)) {
+                tracef("gs: BAD CHAIN draw %zu tag %u of %u: %s (tag qwc %u, wants %u; codes %08x %08x)", sent - 1, bad, t_, why, static_cast<unsigned>(chain[bad].tag & 0xFFFF), wanted,
+                       static_cast<unsigned>(chain[bad].vif0), static_cast<unsigned>(chain[bad].vif1));
+            }
+        }
         const bool traced = frameNumber_ == 1 && sent <= 90;
         if (traced) {
             tracef("gs: d%zu: chain of %u tags built, waiting for the DMA", sent - 1, t_);
