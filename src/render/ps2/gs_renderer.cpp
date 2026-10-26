@@ -552,7 +552,11 @@ void GsRenderer::waitVuIdle() const {
 }
 
 void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend) {
+    std::size_t sent = 0;
     for (const Draw& d : list) {
+        if (frameNumber_ == 1 && sent++ % 50 == 0) {
+            std::printf("gs: frame 1: draw %zu of %zu (list %d)\n", sent - 1, list.size(), blend);
+        }
         const GpuPrimitive& p = *d.primitive;
         if (p.skinned || !gpu_->baked || p.firstVertex >= gpu_->soups.size()) {
             continue;
@@ -984,13 +988,16 @@ std::size_t GsRenderer::preload(const Camera& camera, const std::function<void(s
     }
     std::sort(images.begin(), images.end());
     images.erase(std::unique(images.begin(), images.end()), images.end());
-    std::size_t done = 0;
+    std::size_t done = 0, failed = 0;
     for (const int image : images) {
-        textureFor(image);
+        if (textureFor(image) == nullptr) {
+            ++failed;
+        }
         if (progress) {
             progress(++done, images.size());
         }
     }
+    std::printf("gs: preload: %zu images, %zu without a texture (read failed or none), %zu bytes of textures in memory\n", images.size(), failed, gpu_->resident);
     return images.size();
 }
 
@@ -1004,9 +1011,19 @@ bool GsRenderer::draw(const Camera& camera) {
     ad(gs_, GS_SETREG_ZBUF_1(gs_->ZBuffer / 8192, gs_->PSMZ, 0), GS_ZBUF_1);
     gsKit_clear(gs_, GS_SETREG_RGBAQ(static_cast<int>(clear_[0] * 255), static_cast<int>(clear_[1] * 255), static_cast<int>(clear_[2] * 255), 0x80, 0));
     // The clear goes out and is done before anything is kicked from the VU1 (two paths into the GIF are not ordered against each other).
+    const bool trace = frameNumber_ <= 2;  // (the first frames say where they are: a console that stops leaves the last of these)
+    if (trace) {
+        std::printf("gs: frame %zu: clearing\n", frameNumber_);
+    }
     gsKit_queue_exec(gs_);
     dmaKit_wait_fast();
+    if (trace) {
+        std::printf("gs: frame %zu: clear sent, waiting for the GS to finish it\n", frameNumber_);
+    }
     gsKit_finish();
+    if (trace) {
+        std::printf("gs: frame %zu: cleared\n", frameNumber_);
+    }
     if (drawScene_ && gpu_) {
         std::vector<Draw> opaque, layers, blended;
         const double c0 = now();
@@ -1015,10 +1032,19 @@ bool GsRenderer::draw(const Camera& camera) {
         // Opaque draws may come in any order (the Z buffer sorts them): by texture, so that each is uploaded once.
         const auto imageOf = [](const Draw& d) { return d.material ? d.material->image : -1; };
         std::stable_sort(opaque.begin(), opaque.end(), [&](const Draw& a, const Draw& b) { return a.layer != b.layer ? a.layer < b.layer : imageOf(a) < imageOf(b); });
+        if (trace) {
+            std::printf("gs: frame %zu: %zu opaque, %zu layered, %zu blended draws\n", frameNumber_, opaque.size(), layers.size(), blended.size());
+        }
         drawListVu(f, opaque, 0);
         drawListVu(f, layers, 1);
         drawListVu(f, blended, 1);
+        if (trace) {
+            std::printf("gs: frame %zu: all draws sent, waiting for the VU1 and the GS\n", frameNumber_);
+        }
         waitVuIdle();
+        if (trace) {
+            std::printf("gs: frame %zu: idle\n", frameNumber_);
+        }
     }
     frame_.textureBytes = gpu_ ? gpu_->resident : 0;
     frame_.litCacheKiB = litCacheBytes_ / 1024;
@@ -1026,6 +1052,9 @@ bool GsRenderer::draw(const Camera& camera) {
     gsKit_queue_exec(gs_);
     gsKit_sync_flip(gs_);
     frame_.submit = now() - s0;
+    if (trace) {
+        std::printf("gs: frame %zu: shown\n", frameNumber_);
+    }
     return true;
 }
 
