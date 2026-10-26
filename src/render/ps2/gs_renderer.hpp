@@ -114,6 +114,7 @@ private:
 
     void drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend);
     void tracef(const char* format, ...) const __attribute__((format(printf, 2, 3)));
+    void waitVifDma(const char* where, std::size_t draw) const;
     std::function<void(const char*)> trace_;
     void initVu();
     void waitVuIdle() const;

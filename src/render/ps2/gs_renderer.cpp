@@ -44,6 +44,9 @@ double now() {
     return static_cast<double>(t.tv_sec) + static_cast<double>(t.tv_nsec) * 1e-9;
 }
 
+// A 32-bit hardware register (an unsigned int: the traces print it with %x; uint32_t is a long on this toolchain).
+unsigned reg32(unsigned long address) { return *reinterpret_cast<const volatile unsigned*>(address); }
+
 unsigned log2Of(unsigned v) {
     unsigned n = 0;
     while ((1u << n) < v) {
@@ -541,12 +544,37 @@ void GsRenderer::waitVuIdle() const {
     const volatile std::uint32_t* vifStat = reinterpret_cast<const volatile std::uint32_t*>(0x10003C00);
     const volatile std::uint32_t* vpuStat = reinterpret_cast<const volatile std::uint32_t*>(0x10003800);
     const volatile std::uint32_t* gifStat = reinterpret_cast<const volatile std::uint32_t*>(0x10003020);
+    const double start = now();
+    double next = 2;
     for (;;) {
         const bool vifIdle = (*vifStat & 0x3) == 0;
         const bool vuIdle = (*vpuStat & 0x100) == 0;
         const bool gifIdle = (*gifStat & (3u << 10)) == 0 && ((*gifStat >> 24) & 0x1F) == 0;
         if (vifIdle && vuIdle && gifIdle) {
             return;
+        }
+        if (now() - start >= next) {  // (see waitVifDma)
+            next += 2;
+            tracef("gs: idle wait (%.0f s): vif %d vu %d gif %d | D1_CHCR %08x QWC %08x TADR %08x | VIF1_STAT %08x ERR %08x CODE %08x | VPU_STAT %08x | GIF_STAT %08x TAG %08x %08x CNT %08x",
+                   now() - start, vifIdle ? 1 : 0, vuIdle ? 1 : 0, gifIdle ? 1 : 0, reg32(0x10009000), reg32(0x10009020), reg32(0x10009030), reg32(0x10003C00), reg32(0x10003C20),
+                   reg32(0x10003C80), reg32(0x10003800), reg32(0x10003020), reg32(0x10003040), reg32(0x10003050), reg32(0x10003060));
+        }
+    }
+}
+
+// Waits for the VIF1's DMA, and when that takes more than two seconds says where everything is (every two seconds): what each unit is waiting for. A console that stalls here
+// shows nothing else, and the registers are what tell a stalled VIF from a program that does not end from a GIF that is waiting for data.
+void GsRenderer::waitVifDma(const char* where, std::size_t draw) const {
+    const double start = now();
+    double next = 2;
+    while ((reg32(0x10009000) & 0x100) != 0) {  // D1_CHCR.STR
+        if (now() - start >= next) {
+            next += 2;
+            tracef("gs: DMA wait (%s, draw %zu, %.0f s): D1_CHCR %08x QWC %08x MADR %08x TADR %08x | VIF1_STAT %08x ERR %08x CODE %08x NUM %08x CYCLE %08x ITOP %08x TOP %08x | VPU_STAT %08x |"
+                   " GIF_STAT %08x TAG %08x %08x CNT %08x | D_STAT %08x",
+                   where, draw, now() - start, reg32(0x10009000), reg32(0x10009020), reg32(0x10009010), reg32(0x10009030), reg32(0x10003C00), reg32(0x10003C20), reg32(0x10003C80),
+                   reg32(0x10003C60), reg32(0x10003C40), reg32(0x10003CD0), reg32(0x10003CE0), reg32(0x10003800), reg32(0x10003020), reg32(0x10003040), reg32(0x10003050),
+                   reg32(0x10003060), reg32(0x1000E010));
         }
     }
 }
@@ -785,8 +813,8 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         for (int k = 0; k < 8; ++k) {
             guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
         }
-        if (frameNumber_ == 1 && sent >= 240 && sent <= 330) {
-            tracef("gs: d%zu part %d obj %u corners %u tex %d psm %d %ux%u upload %d clut %d alpha %d blend %d inview %d", sent - 1, static_cast<int>(d.instance->part), d.instance->object, corners,
+        if (frameNumber_ == 1 && sent <= 90) {
+            tracef("gs: d%zu part %d obj %u corners %u tex %d psm %d %ux%u upload %d clut %d alpha %d blend %d inview %d", sent - 1, static_cast<int>(d.instance->part), static_cast<unsigned>(d.instance->object), corners,
                    texture ? 1 : 0, texture ? static_cast<int>(texture->tex.PSM) : -1, texture ? static_cast<unsigned>(texture->tex.Width) : 0u, texture ? static_cast<unsigned>(texture->tex.Height) : 0u,
                    upload ? 1 : 0, texture && texture->clut ? 1 : 0, m ? static_cast<int>(m->alpha) : -1, blend, static_cast<int>(boxInView(guarded, p.low, p.high)));
         }
@@ -983,11 +1011,11 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         SyncDCache(chain, chain + t_);
         frame_.vuBuild += now() - t0;
         t0 = now();
-        const bool traced = frameNumber_ == 1 && sent >= 240 && sent <= 330;
+        const bool traced = frameNumber_ == 1 && sent <= 90;
         if (traced) {
             tracef("gs: d%zu: chain of %u tags built, waiting for the DMA", sent - 1, t_);
         }
-        dma_channel_wait(DMA_CHANNEL_VIF1, 0);  // the DMA is one chain at a time: the last draw's must have been read
+        waitVifDma("before a draw", sent - 1);  // the DMA is one chain at a time: the last draw's must have been read
         dma_channel_send_chain(DMA_CHANNEL_VIF1, chain, 0, DMA_FLAG_TRANSFERTAG, 0);
         if (traced) {
             tracef("gs: d%zu: chain sent", sent - 1);
