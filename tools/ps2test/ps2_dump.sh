@@ -21,7 +21,10 @@ sym() { "$nm" "$elf" | awk -v n="$1" '$3 == n { print $1 }'; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 ring=$(sym g_traceRing); total=$(sym g_traceTotal); stage=$(sym g_consoleStage); frame=$(sym g_consoleFrame)
 [ -n "$ring" ] && [ -n "$total" ] || { echo "$elf has no g_traceRing (a build older than the trace ring?)" >&2; exit 1; }
-dump() { ps2client -h "$ip" dumpmem "0x$1" "$2" "$tmp/$3" >/dev/null; }
+dump() {
+    # ps2client waits for ever for an answer that a ps2link without dumpmem (or one the program has wedged) never sends.
+    timeout 15 ps2client -h "$ip" dumpmem "0x$1" "$2" "$tmp/$3" >/dev/null || { echo "dumpmem got no answer in 15 s (address 0x$1): this ps2link may not support it, or cannot while the program runs" >&2; exit 1; }
+}
 dump "$ring" 4096 ring.bin
 dump "$total" 4 total.bin
 [ -n "$stage" ] && dump "$stage" 4 stage.bin
