@@ -42,13 +42,15 @@ Running it in PCSX2
      "host:" is this folder. Loading takes about 10 seconds (PCSX2 does not model a disc). The software renderer is fine too, but slow.
 
 Controls (the controller in port 1; in PCSX2 the default keyboard mapping applies)
-  D-pad or left stick   move the camera over the lot
+  D-pad                move the camera over the lot
   L2 / R2               zoom in / out
   L1 / R1               turn the view a quarter
-  Triangle / Cross      storey up / down
+  Triangle / Cross      storey up / down (only the storey being looked at is drawn; the ground and roofs stay)
   Square                wall mode: down, cutaway, up (with roofs)
   Circle                roofs on / off
   Start                 leave
+
+The camera is moved with the d-pad only (the sticks are not read).
 
 What to expect: a slow frame rate (the renderer is unoptimised and PCSX2 is not cycle accurate), the Sims' markers wandering as their scripts run, a game clock that
 advances. After about two minutes of play something may still fail; it prints a line to the console and stops.

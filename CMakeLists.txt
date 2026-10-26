@@ -493,6 +493,9 @@ else()
     add_executable(simmem tools/simmem/main.cpp)
     target_link_libraries(simmem PRIVATE ts2sim ts2scene project_warnings)
 
+    add_executable(cscenestat tools/cscenestat/main.cpp)
+    target_link_libraries(cscenestat PRIVATE ts2scene ts2renderplan project_warnings)
+
     add_executable(opcodecount tools/opcodecount/main.cpp)
     target_link_libraries(opcodecount PRIVATE ts2content project_warnings)
 

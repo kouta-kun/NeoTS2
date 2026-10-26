@@ -83,6 +83,23 @@ void trimScene(ts2::scene::Scene& scene) {
     }
 }
 
+// Only the storey being looked at is drawn (the rest would cost draw calls for what is hidden or cut away): the ground around the lot and the roofs stay as the
+// view's own rules have them. An imposter for the other storeys' outsides is to come.
+void keepCurrentStorey(const ts2::scene::Scene& scene, const ts2::scene::View& view, std::vector<std::uint8_t>& visible) {
+    for (std::size_t i = 0; i < visible.size() && i < scene.instances.size(); ++i) {
+        if (visible[i] == 0) {
+            continue;
+        }
+        const auto& instance = scene.instances[i];
+        if (instance.part == ts2::scene::Part::Other || instance.part == ts2::scene::Part::Roof || instance.part == ts2::scene::Part::Skirt) {
+            continue;
+        }
+        if (instance.level != view.level) {
+            visible[i] = 0;
+        }
+    }
+}
+
 // The lot's simulation from a bank folder simbank wrote, with the routes and animations the game's models gave when it was made.
 std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& bank) {
     std::ifstream cfg(bank / "sim.cfg");
@@ -214,6 +231,17 @@ int runConsoleLot(int argc, char** argv) {
         LotView lotView;
         CONSOLE_STAGE(10);
         lotView.start(scene, orbit);
+        {
+            // The storeys a Sim can stand on are those with floors: the level above the last of them may hold only an attic's walls and roof.
+            int highestFloor = lotView.ground;
+            for (const auto& instance : scene.instances) {
+                if (instance.part == ts2::scene::Part::Floor && instance.level > highestFloor) {
+                    highestFloor = instance.level;
+                }
+            }
+            lotView.top = std::min(lotView.top, highestFloor);
+            lotView.view.level = lotView.top;
+        }
         CONSOLE_STAGE(11);
         std::uint64_t last = ts2::platform::ticksNs();
         unsigned frame = 0;
@@ -242,14 +270,23 @@ int runConsoleLot(int argc, char** argv) {
             CONSOLE_STAGE(14);
             life.update(static_cast<double>(dt) * 1000, scene, renderer);
             CONSOLE_STAGE(15);
-            renderer.show(ts2::scene::visibleInstances(scene, lotView.view));
+            auto visible = ts2::scene::visibleInstances(scene, lotView.view);
+            const auto before = static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1}));
+            keepCurrentStorey(scene, lotView.view, visible);
+            if (frame == 0) {
+                std::printf("neots2: level %d of %d..%d: %zu instances shown, %zu with the storey filter\n", lotView.view.level, lotView.ground, lotView.top, before,
+                            static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1})));
+            }
+            renderer.show(std::move(visible));
             CONSOLE_STAGE(16);
             if (!renderer.draw(orbit.camera())) {
                 break;
             }
             CONSOLE_STAGE(17);
             if (frame % 120 == 0) {
-                std::printf("neots2: frame %u, %zu ticks, clock %s\n", frame, life.ticks(), life.clockText().c_str());
+                const auto& stats = renderer.lastFrame();
+                std::printf("neots2: frame %u, %zu ticks, clock %s; %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped, %zu vu batches, %zu textures read\n", frame,
+                            life.ticks(), life.clockText().c_str(), stats.draws, stats.triangles, stats.drawn, stats.culled, stats.clipped, stats.vuBatches, stats.uploads);
             }
         }
     } catch (const std::exception& ex) {
