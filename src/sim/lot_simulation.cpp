@@ -196,6 +196,12 @@ void LotSimulation::setRouteSources(RouteSources sources) {
     world_.setStepBlocker([this](const SimObject& sim, float x, float y, std::int32_t level) { return stepBlocker(sim, x, y, level); });
 }
 
+std::size_t LotSimulation::warm() {
+    const std::size_t warmed = code_.warm();
+    routeWorld();
+    return warmed;
+}
+
 const RouteWorld* LotSimulation::routeWorld() {
     if (!routeSources_) {
         return nullptr;

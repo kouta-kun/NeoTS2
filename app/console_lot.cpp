@@ -223,6 +223,13 @@ int runConsoleLot(int argc, char** argv) {
         ConsoleLife life(withSim ? loadBank(bank) : nullptr, scene);
         g_consoleStage = 3;
         memory("simulation loaded");
+        if (life.hasSimulation()) {
+            // The route grids and the behaviours the first ticks of a run need, now and not in the middle of a tick (each was a stall of a second or more).
+            const std::uint64_t w0 = ts2::platform::ticksNs();
+            const std::size_t warmed = life.simulation().warm();
+            std::printf("neots2: warmed %zu resources and the route grids in %.1f s\n", warmed, static_cast<double>(ts2::platform::ticksNs() - w0) / 1e9);
+            memory("simulation warmed");
+        }
         trimScene(scene);
         memory("scene trimmed");
         std::printf("neots2: %zu Sims, clock %s\n", life.simCount(), life.clockText().c_str());

@@ -70,6 +70,50 @@ NameTable readNameTable(const std::vector<std::uint8_t>& bytes) {
     return names;
 }
 
+std::vector<std::uint8_t> writeWarmList(const std::vector<std::array<std::uint32_t, 3>>& keys) {
+    std::vector<std::uint8_t> out;
+    const auto put = [&](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) {
+            out.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        }
+    };
+    put(static_cast<std::uint32_t>(keys.size()));
+    for (const auto& key : keys) {
+        put(key[0]);
+        put(key[1]);
+        put(key[2]);
+    }
+    return out;
+}
+
+std::size_t IndexCodeSource::warm() {
+    const auto* list = index_.find({kWarmListType, 0, 0, 0});
+    if (list == nullptr) {
+        return 0;
+    }
+    content::ResourceIndex::Quiet quiet;
+    const std::vector<std::uint8_t> bytes = index_.read(*list);
+    const auto get = [&](std::size_t at) {
+        return static_cast<std::uint32_t>(bytes[at]) | static_cast<std::uint32_t>(bytes[at + 1]) << 8 | static_cast<std::uint32_t>(bytes[at + 2]) << 16 |
+               static_cast<std::uint32_t>(bytes[at + 3]) << 24;
+    };
+    if (bytes.size() < 4) {
+        return 0;
+    }
+    const std::size_t count = std::min<std::size_t>(get(0), (bytes.size() - 4) / 12);
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t type = get(4 + i * 12), group = get(8 + i * 12), instance = get(12 + i * 12);
+        if (type == types::kBehavior) {
+            behavior(group, static_cast<std::uint16_t>(instance));
+        } else if (type == types::kInteractionTable) {
+            interactionTable(group, static_cast<std::uint16_t>(instance));
+        } else if (type == kBehaviorConstants) {
+            constants(group, static_cast<std::uint16_t>(instance));
+        }
+    }
+    return count;
+}
+
 IndexCodeSource::IndexCodeSource(content::ResourceIndex& index) : index_(index) {
     if (const auto* table = index_.find({kNameTableType, 0, 0, 0})) {
         // A bank: its lookups by name were recorded, so nothing is scanned.

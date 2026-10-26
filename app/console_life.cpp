@@ -1,5 +1,7 @@
 #include "console_life.hpp"
 
+#include "platform/platform.hpp"
+
 #include "sim/clock.hpp"
 #include "sim/turn.hpp"
 
@@ -33,7 +35,12 @@ void ConsoleLife::update(double ms, ts2::scene::Scene& scene, ts2::render::IRend
     pendingMs_ = std::min(pendingMs_ + ms, kMaxTicksPerUpdate * tickMs);
     bool ticked = false;
     while (pendingMs_ >= tickMs) {
+        const std::uint64_t t0 = ts2::platform::ticksNs();
         sim_->tick();
+        const double tickMsTaken = static_cast<double>(ts2::platform::ticksNs() - t0) / 1e6;
+        if (tickMsTaken > 100) {  // (a stall worth knowing about: see the profile section of docs/ps2-status-sims-and-depth.md)
+            std::printf("neots2: tick %zu took %.0f ms\n", ticks_, tickMsTaken);
+        }
         pendingMs_ -= tickMs;
         ++ticks_;
         ticked = true;

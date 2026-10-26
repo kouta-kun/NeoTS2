@@ -16,6 +16,7 @@
 #include "formats/neighborhood_id.hpp"
 #include "formats/objf.hpp"
 #include "formats/qfs.hpp"
+#include "formats/str.hpp"
 #include "scene/animation_library.hpp"
 #include "scene/assets.hpp"
 #include "scene/outfit_properties.hpp"
@@ -30,6 +31,8 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <array>
+#include <vector>
 #include <map>
 #include <set>
 #include <tuple>
@@ -43,10 +46,14 @@ int main(int argc, char** argv) {
     try {
         const fs::path install = argv[1], lot = argv[2], out = argv[3];
         const std::size_t ticks = argc > 4 ? std::strtoul(argv[4], nullptr, 10) : 3000;
+        const std::size_t warmTicks = std::getenv("SIMBANK_WARM_TICKS") != nullptr ? std::strtoul(std::getenv("SIMBANK_WARM_TICKS"), nullptr, 10) : 1000;
         using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>;
         std::map<Key, std::vector<std::uint8_t>> gathered;
         // Only what the simulation itself reads goes in the code package: what the game's models and animations are asked for goes to support.bin.
         bool recording = true;
+        bool ticking = false;
+        std::set<Key> warmSeen;
+        std::vector<std::array<std::uint32_t, 3>> warm;
         struct Pause {
             bool& flag;
             bool was;
@@ -58,7 +65,12 @@ int main(int argc, char** argv) {
                 return;
             }
             const auto& k = r.entry.key;
-            gathered.try_emplace(Key{k.type, k.group, k.instance, k.instanceHigh}, bytes);
+            // The simulation reads US English only: a string table of several languages keeps that one (a tenth of the bytes to unpack and parse).
+            const bool text = k.type == 0x53545223 || k.type == 0x54544173 || k.type == 0x43545353;  // STR#, TTAs, CTSS
+            gathered.try_emplace(Key{k.type, k.group, k.instance, k.instanceHigh}, text ? ts2::str::keepLanguage(bytes, 1) : bytes);
+            if (ticking && (k.type == 0x42484156 || k.type == 0x54544142 || k.type == 0x42434F4E) && warmSeen.insert(Key{k.type, k.group, k.instance, 0}).second) {
+                warm.push_back({k.type, k.group, k.instance});  // (BHAV, TTAB, BCON: read for the first time while ticking)
+            }
         };
         // The behaviours looked up by name (Run Tree by Name and the like), for the bank to answer without scanning.
         ts2::sim::NameTable names;
@@ -186,9 +198,14 @@ int main(int argc, char** argv) {
                 }
                 std::printf("simbank: %zu animations of the global age lists asked once\n", names);
             }
+            ticking = true;
             for (std::size_t i = 0; i < ticks; ++i) {
+                if (i == warmTicks) {
+                    ticking = false;  // (what the first ticks read is what a console would otherwise read in the middle of them)
+                }
                 simulation.tick();
             }
+            ticking = false;
             // The same fingerprint tools/simmem prints, so that a run on the console can be compared with this one that had the game's files.
             unsigned checksum = 0, walkers = 0;
             simulation.world().nextAfter(0, [&](const ts2::sim::SimObject& o) {
@@ -311,6 +328,8 @@ int main(int argc, char** argv) {
             }
         }
         gathered.emplace(Key{ts2::sim::kNameTableType, 0, 0, 0}, ts2::sim::writeNameTable(names));
+        gathered.emplace(Key{ts2::sim::kWarmListType, 0, 0, 0}, ts2::sim::writeWarmList(warm));
+        std::printf("simbank: warm list of %zu behaviours, interaction tables and constants\n", warm.size());
 
         const fs::path hood = ts2::content::neighborhoodOfLot(lot);
         const fs::path hoodOut = out / "Neighborhoods" / hood.filename();

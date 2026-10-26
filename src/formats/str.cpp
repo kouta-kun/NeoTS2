@@ -82,4 +82,27 @@ StringTable parse(std::span<const std::uint8_t> data) {
     return t;
 }
 
+std::vector<std::uint8_t> keepLanguage(std::span<const std::uint8_t> data, std::uint8_t language) {
+    const StringTable t = parse(data);
+    if (!t.supported || t.format != 0xFFFD) {
+        return {data.begin(), data.end()};
+    }
+    std::vector<std::uint8_t> out(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(kNameSize));
+    const auto kept = t.forLanguage(language);
+    out.push_back(0xFD);
+    out.push_back(0xFF);
+    out.push_back(static_cast<std::uint8_t>(kept.size() & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(kept.size() >> 8));
+    const auto text = [&](const std::string& s) {
+        out.insert(out.end(), s.begin(), s.end());
+        out.push_back(0);
+    };
+    for (const Entry* e : kept) {
+        out.push_back(e->language);
+        text(e->value);
+        text(e->description);
+    }
+    return out;
+}
+
 } // namespace ts2::str

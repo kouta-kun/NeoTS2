@@ -3,6 +3,7 @@
 #include "content/resource_index.hpp"
 #include "sim/code_source.hpp"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <optional>
@@ -20,12 +21,20 @@ using NameTable = std::map<std::pair<std::uint32_t, std::string>, std::uint16_t>
 std::vector<std::uint8_t> writeNameTable(const NameTable& names);
 NameTable readNameTable(const std::vector<std::uint8_t>& bytes);
 
+// A bank's list of the behaviours, interaction tables and constants the recorded run read, which a console reads and parses before the first tick instead of
+// in the middle of one (group 0, instance 0 of this type): the keys as (type, group, instance) triples of 32-bit numbers, after a count.
+constexpr std::uint32_t kWarmListType = 0x5741524D;
+std::vector<std::uint8_t> writeWarmList(const std::vector<std::array<std::uint32_t, 3>>& keys);
+
 class IndexCodeSource : public CodeSource {
 public:
     // Called with each name lookup and its answer (for tools that gather a name table).
     static inline std::function<void(std::uint32_t, const std::string&, std::optional<std::uint16_t>)> nameObserver;
 
     explicit IndexCodeSource(content::ResourceIndex& index);
+
+    // Reads and parses what the bank's warm list names (nothing without one); returns how many.
+    std::size_t warm();
 
     std::shared_ptr<const bhav::Behavior> behavior(std::uint32_t group,
                                                    std::uint16_t instance) override;

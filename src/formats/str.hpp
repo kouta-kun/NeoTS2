@@ -25,4 +25,7 @@ struct StringTable {
 
 StringTable parse(std::span<const std::uint8_t> data);
 
+// The table's bytes with only the entries of `language` kept, for a table that holds several (0xFFFD): the same bytes for any other.
+std::vector<std::uint8_t> keepLanguage(std::span<const std::uint8_t> data, std::uint8_t language);
+
 } // namespace ts2::str

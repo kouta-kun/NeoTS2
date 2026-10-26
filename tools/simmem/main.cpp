@@ -22,6 +22,7 @@
 #include <exception>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
@@ -316,6 +317,30 @@ int main(int argc, char** argv) {
             });
             return sum;
         };
+#ifndef __PS2__
+        std::map<std::uint32_t, std::pair<unsigned, std::size_t>> lazyByType;
+        std::map<unsigned, std::pair<unsigned, std::size_t>> lazyByTick;
+        if (std::getenv("SIMMEM_LAZY") != nullptr) {
+            ts2::content::ResourceIndex::sharedObserver = [&](const ts2::content::ResourceIndex::Resource& r, const std::vector<std::uint8_t>& bytes) {
+                auto& e = lazyByType[r.entry.key.type];
+                ++e.first;
+                auto& t = lazyByTick[static_cast<unsigned>(g_ticksDone)];
+                ++t.first;
+                t.second += bytes.size();
+                if ((r.entry.key.type == 0x53545223 || r.entry.key.type == 0x54544173 || r.entry.key.type == 0x54544142) && bytes.size() > 20000) {
+                    std::printf("lazy big: tick %u type %08X group %08X instance %X, %zu bytes\n", static_cast<unsigned>(g_ticksDone), r.entry.key.type, r.entry.key.group, r.entry.key.instance, bytes.size());
+                }
+                e.second += bytes.size();
+            };
+        }
+#endif
+#ifndef __PS2__
+        if (std::getenv("SIMMEM_WARM") != nullptr) {
+            const double w0 = now();
+            const std::size_t warmed = simulation->warm();
+            std::printf("simmem: warmed %zu in %.2f s, heap in use %.2f MiB\n", warmed, now() - w0, heapInUse() / 1048576.0);
+        }
+#endif
         const double ticking = now();
         for (std::size_t i = 0; i < ticks; ++i) {
             g_stage = 200 + static_cast<unsigned>(i);
@@ -325,6 +350,11 @@ int main(int argc, char** argv) {
             simulation->tick();
             const auto ms = static_cast<unsigned>((now() - t0) * 1000);
             g_tickMsMax = ms > g_tickMsMax ? ms : g_tickMsMax;
+#ifndef __PS2__
+            if (const char* slow = std::getenv("SIMMEM_SLOW"); slow != nullptr && (now() - t0) * 1000 > std::atof(slow)) {  // ticks that took more than this many ms
+                std::printf("simmem: tick %zu took %.2f ms\n", i, (now() - t0) * 1000);
+            }
+#endif
             g_ticksDone = static_cast<unsigned>(i + 1);
             if ((i + 1) % 5 == 0 && (i + 1) / 5 <= 96) {
                 g_fingerprints[(i + 1) / 5 - 1] = fingerprint();  // every 5 ticks, to find where two runs part
@@ -363,6 +393,16 @@ int main(int argc, char** argv) {
         g_walkers = walkers;
         std::printf("simmem: fingerprint %08x, %u Sims walking\n", checksum, walkers);
         g_heapAfter = heapInUse();
+#ifndef __PS2__
+        for (const auto& [tick, e] : lazyByTick) {
+            if (e.first >= 3) {
+                std::printf("lazy tick %u: %u reads, %zu bytes\n", tick, e.first, e.second);
+            }
+        }
+        for (const auto& [type, e] : lazyByType) {
+            std::printf("lazy: type %08X: %u reads, %zu bytes\n", type, e.first, e.second);
+        }
+#endif
         g_stage = 1000;
         std::printf("simmem: %zu ticks in %.2f s (%.2f ms a tick, slowest %u ms), heap in use %.2f MiB\n", ticks, now() - ticking,
                     (now() - ticking) * 1000.0 / static_cast<double>(ticks), static_cast<unsigned>(g_tickMsMax), g_heapAfter / 1048576.0);

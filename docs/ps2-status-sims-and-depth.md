@@ -59,3 +59,17 @@ and nothing here is a real PS2 number). Milliseconds a frame, in the order the p
 Left, in order of size: VU chain building (~34 ms for ~640 draws), EE clipping (~17), the per-draw uniforms (9), collect (7), texture lookup (4.5), the sim update (7 to 20 with Sims walking).
 Ideas: light Sims only when they have moved a tile (they are lit again on every step); fewer draws by merging primitives with the same material; a cheaper chain per draw.
 Splitting leaves out blended primitives, skinned meshes and meshes whose instances keep per-primitive sun or light sets (`Instance::sun`, `partLightSets`).
+
+## Stalls in the simulation's ticks (found with a host `simmem`, fixed in the bank and at load)
+
+The console logged `tick N took M ms` for any tick over 100 ms: 1034 ms at tick 2, ~960 and ~780 ms at ticks 110 and 111, then several of 150 to 430 ms. The same ticks are slow
+on the host (6 to 9 ms, `SIMMEM_SLOW=<ms>` lists them; `SIMMEM_LAZY=1` counts the resources read after load by type and tick), so it is work the tick does, not the console. Causes:
+
+- **String tables of every language.** The first tick read 892 K + 299 K + 175 K of STR# and tick 110 a 808 K TTAs, all in 11 languages, and unpacked and parsed them to use US English only.
+  `simbank` now keeps only language 1 of STR#, TTAs and CTSS (`str::keepLanguage`): lazy string bytes 2.6 MB -> 81 KB over 700 ticks, `code.package` 3.36 -> 2.91 MB, same fingerprint.
+- **The route grids were built on the first route** (tick 110 to 111: `RouteGrid::split`/`insert` 17,000 calls, ~7 ms on the host). `LotSimulation::warm()` builds them at load.
+- **Behaviours parsed in the middle of ticks.** `simbank` records the BHAV, TTAB and BCON the first 1000 ticks read first (`SIMBANK_WARM_TICKS`) as a warm list in `code.package`
+  (`kWarmListType`), and `warm()` parses them at load (637 items, 0.8 MiB, 0.01 s on the host).
+
+`neots2` prints `warmed N resources and the route grids in X s` (1.0 s in PCSX2) after loading. After this the slowest tick on the host is 2 ms (it was 9) and in PCSX2 the 1 s stalls
+are gone; ticks of 150 to 430 ms remain (1 to 1.5 ms on the host: footprint updates and Sims' own work), not looked at yet. On a disc these reads would also have been seeks, which is the better reason.
