@@ -35,6 +35,9 @@ public:
 
     // Loads the code from the install's object packages and the lot from its package. `onLoadStep`
     // watches the scripts objects run as the lot loads.
+    // Called with the name of each stage of a load as it begins (for a loading screen: a load takes a while).
+    static inline std::function<void(const char*)> loadPhase;
+
     // Does ahead what a tick would otherwise stop to do the first time it needs it: reads and parses what a bank's warm list names (see
     // IndexCodeSource::warm) and builds the route grids. Returns how many resources the list held.
     std::size_t warm();

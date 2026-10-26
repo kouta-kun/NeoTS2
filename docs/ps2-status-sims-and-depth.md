@@ -73,3 +73,13 @@ on the host (6 to 9 ms, `SIMMEM_SLOW=<ms>` lists them; `SIMMEM_LAZY=1` counts th
 
 `neots2` prints `warmed N resources and the route grids in X s` (1.0 s in PCSX2) after loading. After this the slowest tick on the host is 2 ms (it was 9) and in PCSX2 the 1 s stalls
 are gone; ticks of 150 to 430 ms remain (1 to 1.5 ms on the host: footprint updates and Sims' own work), not looked at yet. On a disc these reads would also have been seeks, which is the better reason.
+
+## Loading screen and a first run on a real PS2
+
+A first run on a real PS2 (over ps2link) showed a glitched, frozen picture and a console log that stopped after `wanttuning.package` was opened. What is known: nothing was drawn
+between starting the screen and the first frame, and a screen nobody draws on shows the video memory's old contents (PCSX2 shows a blank window, a console shows noise); the load
+after that file is opened is long work with no file access and printed nothing (in PCSX2: the objects' scripts, then `warm()` 1 s, then the first frame, which reads ~214 textures
+one by one through `host:`, each a round trip over the network on a console). What is not known: whether the console was slow or stopped. Added to tell them apart: a loading screen
+drawn right after the screen starts (title, the stage in a built-in 5x7 font, a bar), the stages of `LotSimulation::load` named through `LotSimulation::loadPhase`
+(`reading want definitions`, `reading the lot`, `building the objects` ~9 s in PCSX2, `walls and rooms` ~5 s, `reading the neighborhood`, `want tuning`, `starting the objects`), a heartbeat from the object
+scripts, and the same lines printed to the log. If a real console stops with a bar on screen, the stage names the place.

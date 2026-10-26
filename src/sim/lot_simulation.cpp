@@ -99,16 +99,25 @@ LotSimulation::LotSimulation(const std::vector<std::filesystem::path>& packages,
 
 void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem::path* install, std::optional<std::filesystem::path> wants,
                          std::optional<std::filesystem::path> wantTuning, std::function<void(const StepInfo&)> onLoadStep) {
+    const auto phase = [](const char* name) {
+        if (loadPhase) {
+            loadPhase(name);
+        }
+    };
     std::shared_ptr<content::WantDefinitions> wantDefs;
+    phase("reading want definitions");
     if (wants) {
         wantDefs = std::make_shared<content::WantDefinitions>(content::loadWantDefinitions(*wants));
     }
     vm_.onInteractionStart = [this](const SimObject& sim, const QueuedInteraction& started) { logInteractionStart(sim, started); };
+    phase("reading the lot");
     lot_ = std::make_unique<const content::Lot>(content::loadLot(lot));
     const content::Lot& saved = *lot_;
     objectModels_ = saved.objectModels;
     savedJoints_ = saved.savedJoints;
+    phase("building the objects");
     report_ = buildWorld(saved, code_, world_);
+    phase("walls and rooms");
     world_.setWalls(WallTiles::fromLot(saved));
     world_.setSightWalls(WallTiles::builtWalls(saved));
     if (const auto graph = saved.layerGraphs.find(content::kLayerGraphInstances[1]); graph != saved.layerGraphs.end()) {
@@ -130,6 +139,7 @@ void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem
     }
     std::copy_n(saved.globals.begin(), std::min(saved.globals.size(), vm_.globals.size()), vm_.globals.begin());
     updateTimeOfDay(vm_.globals);
+    phase("reading the neighborhood");
     const auto hood = content::neighborhoodPackage(content::neighborhoodOfLot(lot));
     if (std::ifstream(hood, std::ios::binary).good()) {  // not std::filesystem::exists: on the PlayStation 2 its stat call stopped the program here (see docs/ps2-port-plan.md)
         const content::Neighborhood loaded = content::loadNeighborhood(hood, install != nullptr);
@@ -154,6 +164,7 @@ void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem
         world_.weather() = loaded.weather.value_or(weather::Weather{});
         findCharacterFiles();
     }
+    phase("want tuning");
     if (wants) {
         auto defs = std::move(wantDefs);
         if (const auto& tuning = wantTuning) {
@@ -166,6 +177,7 @@ void LotSimulation::load(const std::filesystem::path& lot, const std::filesystem
         world_.setWantDefinitions(std::move(defs));
     }
     world_.setScripts(install ? loadScripts(*install, code_) : nullptr);
+    phase("starting the objects");
     vm_.onStep = std::move(onLoadStep);
     startObjects();
     vm_.onStep = nullptr;

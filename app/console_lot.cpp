@@ -101,6 +101,85 @@ void keepCurrentStorey(const ts2::scene::Scene& scene, const ts2::scene::View& v
 }
 
 // The lot's simulation from a bank folder simbank wrote, with the routes and animations the game's models gave when it was made.
+GSGLOBAL* g_gs = nullptr;
+const char* g_loadText = "";
+
+// A 5 x 7 font, as columns (bit 0 the top row), for the characters from space to Z: the console has no font of its own to count on.
+constexpr std::uint8_t kFont[59][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00}, {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14}, {0x24, 0x2A, 0x7F, 0x2A, 0x12},
+    {0x23, 0x13, 0x08, 0x64, 0x62}, {0x36, 0x49, 0x55, 0x22, 0x50}, {0x00, 0x05, 0x03, 0x00, 0x00}, {0x00, 0x1C, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x1C, 0x00},
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, {0x08, 0x08, 0x3E, 0x08, 0x08}, {0x00, 0x50, 0x30, 0x00, 0x00}, {0x08, 0x08, 0x08, 0x08, 0x08}, {0x00, 0x60, 0x60, 0x00, 0x00},
+    {0x20, 0x10, 0x08, 0x04, 0x02}, {0x3E, 0x51, 0x49, 0x45, 0x3E}, {0x00, 0x42, 0x7F, 0x40, 0x00}, {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4B, 0x31},
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39}, {0x3C, 0x4A, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03}, {0x36, 0x49, 0x49, 0x49, 0x36},
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, {0x00, 0x36, 0x36, 0x00, 0x00}, {0x00, 0x56, 0x36, 0x00, 0x00}, {0x08, 0x14, 0x22, 0x41, 0x00}, {0x14, 0x14, 0x14, 0x14, 0x14},
+    {0x00, 0x41, 0x22, 0x14, 0x08}, {0x02, 0x01, 0x51, 0x09, 0x06}, {0x32, 0x49, 0x79, 0x41, 0x3E}, {0x7E, 0x11, 0x11, 0x11, 0x7E}, {0x7F, 0x49, 0x49, 0x49, 0x36},
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, {0x7F, 0x41, 0x41, 0x22, 0x1C}, {0x7F, 0x49, 0x49, 0x49, 0x41}, {0x7F, 0x09, 0x09, 0x09, 0x01}, {0x3E, 0x41, 0x49, 0x49, 0x7A},
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, {0x00, 0x41, 0x7F, 0x41, 0x00}, {0x20, 0x40, 0x41, 0x3F, 0x01}, {0x7F, 0x08, 0x14, 0x22, 0x41}, {0x7F, 0x40, 0x40, 0x40, 0x40},
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, {0x7F, 0x04, 0x08, 0x10, 0x7F}, {0x3E, 0x41, 0x41, 0x41, 0x3E}, {0x7F, 0x09, 0x09, 0x09, 0x06}, {0x3E, 0x41, 0x51, 0x21, 0x5E},
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, {0x46, 0x49, 0x49, 0x49, 0x31}, {0x01, 0x01, 0x7F, 0x01, 0x01}, {0x3F, 0x40, 0x40, 0x40, 0x3F}, {0x1F, 0x20, 0x40, 0x20, 0x1F},
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, {0x63, 0x14, 0x08, 0x14, 0x63}, {0x07, 0x08, 0x70, 0x08, 0x07}, {0x61, 0x51, 0x49, 0x45, 0x43},
+};
+
+// `text` (capitals; anything else is shown as a capital or a question mark) with its left edge at x and its top at y, each dot `scale` pixels, in runs of dots to keep the sprites few.
+void drawText(float x, float y, float scale, const char* text, std::uint64_t colour) {
+    for (; *text != 0; ++text, x += 6 * scale) {
+        int c = static_cast<unsigned char>(*text);
+        c = c >= 'a' && c <= 'z' ? c - 32 : c;
+        const auto& glyph = kFont[c >= 0x20 && c <= 0x5A ? c - 0x20 : '?' - 0x20];
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if ((glyph[col] >> row & 1) == 0) {
+                    continue;
+                }
+                int end = col;
+                while (end + 1 < 5 && (glyph[end + 1] >> row & 1) != 0) {
+                    ++end;
+                }
+                gsKit_prim_sprite(g_gs, x + col * scale, y + row * scale, x + (end + 1) * scale, y + (row + 1) * scale, 4, colour);
+                col = end;
+            }
+        }
+    }
+}
+
+// What the screen shows while the program loads (nothing else is drawn until the first frame, and a screen nobody draws on shows what was in the video memory): what it is doing and a bar.
+void loadingScreen(float fraction, const char* text = nullptr) {
+    if (g_gs == nullptr) {
+        return;
+    }
+    if (text != nullptr) {
+        g_loadText = text;
+    }
+    const float w = static_cast<float>(g_gs->Width), h = static_cast<float>(g_gs->Height);
+    const float left = w * 0.2f, right = w * 0.8f, top = h * 0.5f, bottom = h * 0.56f;
+    const float filled = left + (right - left) * std::clamp(fraction, 0.0f, 1.0f);
+    gsKit_clear(g_gs, GS_SETREG_RGBAQ(0x14, 0x14, 0x24, 0x80, 0));
+    gsKit_prim_sprite(g_gs, left - 4, top - 4, right + 4, bottom + 4, 1, GS_SETREG_RGBAQ(0xC0, 0xC0, 0xC0, 0x80, 0));
+    gsKit_prim_sprite(g_gs, left, top, right, bottom, 2, GS_SETREG_RGBAQ(0x14, 0x14, 0x24, 0x80, 0));
+    gsKit_prim_sprite(g_gs, left, top, filled, bottom, 3, GS_SETREG_RGBAQ(0x40, 0xA0, 0xE0, 0x80, 0));
+    drawText(left, h * 0.5f - 66, 3, "NEOTS2", GS_SETREG_RGBAQ(0xE0, 0xE0, 0xE0, 0x80, 0));
+    drawText(left, h * 0.5f - 30, 2, g_loadText, GS_SETREG_RGBAQ(0x90, 0xC8, 0xF0, 0x80, 0));
+    gsKit_queue_exec(g_gs);
+    gsKit_sync_flip(g_gs);
+}
+
+// Called as the lot loads, once for every step a script takes: now and then it moves the bar and says it is alive (a load takes a while and shows nothing else).
+struct LoadProgress {
+    std::uint64_t last = 0, steps = 0;
+    void operator()(const ts2::sim::StepInfo&) {
+        if ((++steps & 0xFF) != 0) {
+            return;
+        }
+        const std::uint64_t now = ts2::platform::ticksNs();
+        if (now - last < 500000000ull) {
+            return;
+        }
+        last = now;
+        std::printf("neots2: loading the lot: %llu script steps\n", static_cast<unsigned long long>(steps));
+        loadingScreen(0.8f, "running the object scripts");
+    }
+};
+
 std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& bank) {
     std::ifstream cfg(bank / "sim.cfg");
     if (!cfg) {
@@ -119,6 +198,16 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
             tuning = line.substr(7);
         }
     }
+    std::printf("neots2: loading the bank\n");
+    {
+        static float fraction;
+        fraction = 0.25f;
+        ts2::sim::LotSimulation::loadPhase = [](const char* name) {
+            fraction = std::min(0.8f, fraction + 0.07f);
+            std::printf("neots2: loading: %s\n", name);
+            loadingScreen(fraction, name);
+        };
+    }
     std::shared_ptr<const ts2::sim::SupportTable> support;
     if (std::ifstream in(bank / "support.bin", std::ios::binary); in) {
         const std::vector<char> data((std::istreambuf_iterator<char>(in)), {});
@@ -129,7 +218,7 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
         return name.empty() ? std::optional<std::filesystem::path>() : std::optional<std::filesystem::path>(bank / name);
     };
     auto simulation = std::make_unique<ts2::sim::LotSimulation>(std::vector<std::filesystem::path>{bank / "code.package"}, packs, bank / lot, optionalFile(wants),
-                                                                optionalFile(tuning));
+                                                                optionalFile(tuning), LoadProgress{});
     if (support) {
         ts2::sim::installSupport(*simulation, support);
     }
@@ -179,6 +268,8 @@ int runConsoleLot(int argc, char** argv) {
     dmaKit_chan_init(DMA_CHANNEL_GIF);
     gsKit_init_screen(gs);
     gsKit_mode_switch(gs, GS_ONESHOT);
+    g_gs = gs;
+    loadingScreen(0.0f, "starting");
     // The controller after the screen, as the viewer test program does it.
     if (!ts2::platform::init()) {
         std::printf("neots2: %s\n", ts2::platform::lastError().c_str());
@@ -203,6 +294,7 @@ int runConsoleLot(int argc, char** argv) {
         ts2::render::BakedMeshes meshes;
         ts2::scene::Scene scene = ts2::render::readBakedHeadCompact(std::move(head), meshes);
         memory("scene head read");
+        loadingScreen(0.1f, "reading the scene");
         ts2::render::GsRenderer renderer(gs);
         renderer.setImageSource(
             [file](const ts2::scene::Image& image) {
@@ -217,18 +309,22 @@ int runConsoleLot(int argc, char** argv) {
         auto prepared = renderer.prepareBaked(scene, std::move(meshes));
         renderer.upload(std::move(prepared));
         memory("scene uploaded");
+        loadingScreen(0.25f, "loading the bank");
         // The lot's simulation.
         g_consoleStage = 2;
         const bool withSim = !(argc > 4 && std::string(argv[4]) == "nosim");  // (to see the scene alone: 4th argument)
         ConsoleLife life(withSim ? loadBank(bank) : nullptr, scene);
+        ts2::sim::LotSimulation::loadPhase = nullptr;
         g_consoleStage = 3;
         memory("simulation loaded");
+        loadingScreen(0.85f, "warming up the simulation");
         if (life.hasSimulation()) {
             // The route grids and the behaviours the first ticks of a run need, now and not in the middle of a tick (each was a stall of a second or more).
             const std::uint64_t w0 = ts2::platform::ticksNs();
             const std::size_t warmed = life.simulation().warm();
             std::printf("neots2: warmed %zu resources and the route grids in %.1f s\n", warmed, static_cast<double>(ts2::platform::ticksNs() - w0) / 1e9);
             memory("simulation warmed");
+            loadingScreen(0.95f, "reading textures for the first frame");
         }
         trimScene(scene);
         memory("scene trimmed");
