@@ -377,7 +377,7 @@ if(PS2)
     target_include_directories(neots2 PRIVATE app src)
     target_link_libraries(neots2 PRIVATE ts2gs ts2renderplan ts2sim ts2scene ts2content ts2formats ts2paths ts2diag ts2settings lua50 stb_image gskit dmakit packet2 dma pad pthread)
     target_compile_options(neots2 PRIVATE -fexceptions)
-    target_link_options(neots2 PRIVATE -Wl,--wrap=_open -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy -Wl,--wrap=pthread_mutex_lock
+    target_link_options(neots2 PRIVATE -Wl,--wrap=_open -Wl,--wrap=_write -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy -Wl,--wrap=pthread_mutex_lock
         -Wl,--wrap=pthread_mutex_timedlock -Wl,--wrap=pthread_mutex_trylock -Wl,--wrap=pthread_mutex_unlock)
     # (the debugging helpers are linked when NEOTS2_PS2_DEBUG is on: see below, with simmem's)
     # The simulation alone, from a simbank folder, as a console program (see tools/simmem).

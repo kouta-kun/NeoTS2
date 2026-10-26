@@ -17,6 +17,7 @@
 #include <kernel.h>
 
 #include <malloc.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -227,7 +228,19 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
 
 } // namespace
 
+// Everything the program prints also goes to host:neots2.log (on a console, the folder ps2client serves): what a console prints may not reach the PC's terminal, a file does.
+// The program's writes to its standard output and error pass through __wrap__write (the link wraps _write).
+std::FILE* g_hostLog = nullptr;
+
+void teeToHost() {
+    g_hostLog = std::fopen("host:neots2.log", "wb");
+    if (g_hostLog != nullptr) {
+        std::setvbuf(g_hostLog, nullptr, _IONBF, 0);
+    }
+}
+
 int runConsoleLot(int argc, char** argv) {
+    teeToHost();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef NEOTS2_PS2_DEBUG
     ts2StartPcSampler();
@@ -489,3 +502,14 @@ int runConsoleLot(int argc, char** argv) {
 }
 
 } // namespace app
+
+extern "C" {
+ssize_t __real__write(int fd, const void* data, size_t size);
+ssize_t __wrap__write(int fd, const void* data, size_t size) {
+    const ssize_t written = __real__write(fd, data, size);
+    if ((fd == 1 || fd == 2) && app::g_hostLog != nullptr) {
+        std::fwrite(data, 1, size, app::g_hostLog);
+    }
+    return written;
+}
+}

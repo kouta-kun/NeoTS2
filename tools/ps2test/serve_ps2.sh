@@ -4,6 +4,7 @@
 # The PS2 must be running ps2link (any launcher that starts it, with the network up) and be reachable at PS2_IP (default $PS2_IP, else 192.168.0.10).
 # With no folder the files are the build in build-ps2-demo and the Lot 68 files under ~/texture-check, as package_demo.sh takes them.
 # host: is this script's staging folder (symlinks to the three files), so the program finds "host:bank" and "host:lot.cscene" as it does under PCSX2.
+# The program's printed output also goes to host:neots2.log, shown live here as [program] lines and kept in the folder you started this in when you stop.
 # Leave it running: ps2client answers the console's file requests and prints its output; Ctrl-C ends it ("reset" below puts ps2link back to waiting).
 #   -r   reset the PS2 to ps2link first (a program that crashed leaves it wedged)
 set -eu
@@ -19,7 +20,14 @@ while getopts "i:r" opt; do
 done
 shift $((OPTIND - 1))
 command -v ps2client >/dev/null || { echo "ps2client is not on PATH (it comes with ps2dev: \$PS2DEV/bin)" >&2; exit 1; }
-stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
+orig=$PWD
+stage=$(mktemp -d)
+finish() {
+    pkill -P $$ -x tail 2>/dev/null || true
+    [ -f "$stage/host/neots2.log" ] && cp "$stage/host/neots2.log" "$orig/neots2.log" && echo "the program's log is kept as $orig/neots2.log"
+    rm -rf "$stage"
+}
+trap finish EXIT
 if [ $# -eq 3 ]; then
     elf=$1; bank=$2; scene=$3
 elif [ $# -eq 1 ] && [ -d "$1" ]; then
@@ -45,6 +53,9 @@ if [ "$reset" = 1 ]; then
     sleep 4
 fi
 echo "serving $serve to $ip (host:neots2.elf, host:bank, host:lot.cscene); Ctrl-C to stop"
+# The program also writes what it prints to host:neots2.log (what ps2link shows of it can be nothing): shown here as it grows.
+touch "$serve/neots2.log"
+tail -n +1 -F "$serve/neots2.log" 2>/dev/null | sed -u 's/^/[program] /' &
 ps2client -h "$ip" execee host:neots2.elf host:bank host:lot.cscene
-# ps2client returns once the program has been started on some versions: stay as the file server and console.
-exec ps2client -h "$ip" listen
+# ps2client returns once the program has been started on some versions: stay as the file server and console (not exec'd: the cleanup above runs when it ends).
+ps2client -h "$ip" listen
