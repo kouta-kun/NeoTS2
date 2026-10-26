@@ -631,9 +631,6 @@ void GsRenderer::tracef(const char* format, ...) const {
 void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, int blend) {
     std::size_t sent = 0;
     for (const Draw& d : list) {
-        if (frameNumber_ == 1 && sent++ % 50 == 0) {
-            tracef("gs: frame 1: draw %zu of %zu (list %d)", sent - 1, list.size(), blend);
-        }
         const GpuPrimitive& p = *d.primitive;
         if (p.skinned || !gpu_->baked || p.firstVertex >= gpu_->soups.size()) {
             continue;
@@ -849,10 +846,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
         for (int k = 0; k < 8; ++k) {
             guarded.m[static_cast<std::size_t>(k)] *= 1.0f / kGuard;
         }
-        if (frameNumber_ == 1 && sent > 90) {
-            tracef("gs: c%zu %u", sent - 1, corners);
-        }
-        if (frameNumber_ == 1 && sent <= 90) {
+        if (false) {
             tracef("gs: d%zu part %d obj %u corners %u tex %d psm %d %ux%u upload %d clut %d alpha %d blend %d inview %d", sent - 1, static_cast<int>(d.instance->part), static_cast<unsigned>(d.instance->object), corners,
                    texture ? 1 : 0, texture ? static_cast<int>(texture->tex.PSM) : -1, texture ? static_cast<unsigned>(texture->tex.Width) : 0u, texture ? static_cast<unsigned>(texture->tex.Height) : 0u,
                    upload ? 1 : 0, texture && texture->clut ? 1 : 0, m ? static_cast<int>(m->alpha) : -1, blend, static_cast<int>(boxInView(guarded, p.low, p.high)));
@@ -1040,9 +1034,13 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
             chain[t_++] = {dmaRef(&colours[first * 4], n / 4), vifCode(0, 0, kVifNop), vifCode(unpackAt(base + kHeaderQw + 1, true, false), n, kUnpackV4_8)};
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(base, 0, kVifItop)};  // (the program finds its buffer by ITOP)
             chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifMscal)};
-            // One batch at a time: the VIF waits for the program to end and for the GIF to take what it kicked before it unpacks the next. (A trial: a console stopped in the
-            // first draw with more than one batch; with this nothing overlaps, and if it still stops the cause is not a race.)
-            chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlush)};
+            // How much of a batch may overlap the next (batchSync_): 0 the VIF waits for the program and the GIF's transfer of what it kicked, 1 for the program only,
+            // 2 for nothing. A console stopped in the first draw with more than one batch with 2 (and with two buffers); with 0 it runs.
+            if (batchSync_ == 0) {
+                chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlush)};
+            } else if (batchSync_ == 1) {
+                chain[t_++] = {1ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifFlushe)};
+            }
             ++frame_.vuBatches;
         }
         chain[t_++] = {7ull << 28, vifCode(0, 0, kVifNop), vifCode(0, 0, kVifNop)};
@@ -1060,7 +1058,7 @@ void GsRenderer::drawListVu(const FrameView& f, const std::vector<Draw>& list, i
                        static_cast<unsigned>(chain[bad].vif0), static_cast<unsigned>(chain[bad].vif1));
             }
         }
-        const bool traced = frameNumber_ == 1 && sent <= 90;
+        const bool traced = false;
         if (traced) {
             tracef("gs: d%zu: chain of %u tags built, waiting for the DMA", sent - 1, t_);
         }

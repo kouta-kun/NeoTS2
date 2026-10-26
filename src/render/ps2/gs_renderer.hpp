@@ -50,6 +50,8 @@ public:
     // Where the first frames say what they are doing (a line at a time, without a newline): to a printf if there is none. A console's printed output can stop reaching
     // the PC, so the program points this at memory it can be read from.
     void setTrace(std::function<void(const char*)> trace) { trace_ = std::move(trace); }
+    // How much a batch of a draw may overlap the next on the VU1 (see drawListVu): 0 not at all (the default), 1 the program may not, 2 fully.
+    void setBatchSync(int mode) { batchSync_ = mode; }
     [[nodiscard]] bool drawToFile(const Camera&, unsigned, unsigned, const std::filesystem::path&) override { return false; }
     [[nodiscard]] std::optional<scene::Image> drawInstancesToImage(const Camera&, unsigned, unsigned, const scene::ObjectLighting&) override {
         return std::nullopt;
@@ -124,6 +126,7 @@ private:
     ImageSource imageSource_;
     std::size_t textureBudget_ = 6 * 1024 * 1024;
     std::size_t frameNumber_ = 0;
+    int batchSync_ = 0;
     unsigned bufferTurn_ = 0;  // which of the VU1's three buffers the next batch goes in (see kBufferBase)
     GSGLOBAL* gs_;
     std::unique_ptr<Gpu> gpu_;

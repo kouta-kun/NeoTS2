@@ -94,3 +94,15 @@ two batches back. A packet changed under the GIF leaves it waiting for data that
 Fixed with three buffers of 108 corners (`kBufferBase`; the program finds its buffer with `xitop`, the chain sets ITOP before each MSCAL and unpacks at explicit addresses). A kick waits for the one
 before it, so by the time the program after a buffer's own has been started that buffer is free to be written again; FLUSHE before the constants keeps a program from losing the constants it is
 loading. In PCSX2 the pictures and the frame time are unchanged. Not yet confirmed on a console. The trace of draws 240 to 330 of frame 1 is still in `drawListVu` for that.
+
+## First frames on a real PS2
+
+With a FLUSH after every MSCAL (`batchSync_` 0: the VIF waits for the program and for the GIF's transfer of what it kicked before it unpacks the next batch) a console draws frames 1 and 2 to the end.
+The stalls were in the first draw with more than one batch (draws 280 to 284 of the opaque list; every draw before it is a single batch): `VIF1_STAT` had ER0 (a DMA tag that does not match its VIF code) and MARK
+set, the last VIF code was the UV unpack of a 108-corner batch with `NUM` 1, the DMA was in a `ref` tag with 12 quadwords left, `VIF1_ERR` 0 (errors not masked, so the VIF stops). Both the two-buffer
+(TOPS) and the three-buffer (ITOP) designs stopped there with nothing between a batch and the next, so the unpack of one batch overlapping the program or the GIF transfer of another is what a console
+does not take; the cause is not known more closely than that. A validator (`chainMismatch`) finds every chain's data sizes right in the emulator. `host:vifmode` (or `serve_ps2.sh -m N`) picks
+the overlap: 0 none, 1 the program may not overlap the next unpack, 2 fully; 1 and 2 are to be tried on a console to win the speed back.
+
+On a console the standard output stopped reaching anything after a few lines (so did `ps2link`'s tty); everything the program says now goes through `logf` / the renderer's trace hook straight to a 4 KB ring
+and `host:neots2.log`. The profile line is printed every 5 seconds, not every 60 frames.

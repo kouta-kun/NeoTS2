@@ -7,15 +7,18 @@
 # The program's printed output also goes to host:neots2.log, shown live here as [program] lines and kept in the folder you started this in when you stop.
 # Leave it running: ps2client answers the console's file requests and prints its output; Ctrl-C ends it ("reset" below puts ps2link back to waiting).
 #   -r   reset the PS2 to ps2link first (a program that crashed leaves it wedged)
+#   -m N how much the VU1's batches of a draw may overlap: 0 not at all (the default: it runs), 1 a program may not overlap the next unpack, 2 fully (stopped a console)
 set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
 ip=${PS2_IP:-192.168.0.10}
 reset=0
-while getopts "i:r" opt; do
+mode=
+while getopts "i:rm:" opt; do
     case $opt in
         i) ip=$OPTARG ;;
         r) reset=1 ;;
-        *) echo "usage: $0 [-i ip] [-r] [demo-folder | demo.tar.gz | elf bank scene]" >&2; exit 2 ;;
+        m) mode=$OPTARG ;;
+        *) echo "usage: $0 [-i ip] [-r] [-m 0|1|2] [demo-folder | demo.tar.gz | elf bank scene]" >&2; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -47,6 +50,7 @@ mkdir -p "$serve"
 ln -s "$(readlink -f "$elf")" "$serve/neots2.elf"
 ln -s "$(readlink -f "$bank")" "$serve/bank"
 ln -s "$(readlink -f "$scene")" "$serve/lot.cscene"
+[ -n "$mode" ] && printf "%s" "$mode" > "$serve/vifmode"
 cd "$serve"
 if [ "$reset" = 1 ]; then
     ps2client -h "$ip" reset

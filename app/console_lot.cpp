@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <new>
 #include <cstdlib>
@@ -65,7 +66,7 @@ namespace {
 // What the heap holds, to see where a 32 MB machine runs out.
 void memory(const char* where) {
     const struct mallinfo m = mallinfo();
-    std::printf("neots2: memory %-24s in use %6.2f MiB, heap %6.2f MiB\n", where, m.uordblks / 1048576.0, m.arena / 1048576.0);
+    logf("neots2: memory %-24s in use %6.2f MiB, heap %6.2f MiB\n", where, m.uordblks / 1048576.0, m.arena / 1048576.0);
 }
 
 // What the app itself needs of the scene is the instances' places, levels, parts and walls, the walls, the storeys and the floor's height: the pictures, materials, lights and
@@ -180,7 +181,7 @@ struct LoadProgress {
             return;
         }
         last = now;
-        std::printf("neots2: loading the lot: %llu script steps\n", static_cast<unsigned long long>(steps));
+        logf("neots2: loading the lot: %llu script steps\n", static_cast<unsigned long long>(steps));
         loadingScreen(0.8f, "running the object scripts");
     }
 };
@@ -203,13 +204,13 @@ std::unique_ptr<ts2::sim::LotSimulation> loadBank(const std::filesystem::path& b
             tuning = line.substr(7);
         }
     }
-    std::printf("neots2: loading the bank\n");
+    logf("neots2: loading the bank\n");
     {
         static float fraction;
         fraction = 0.25f;
         ts2::sim::LotSimulation::loadPhase = [](const char* name) {
             fraction = std::min(0.8f, fraction + 0.07f);
-            std::printf("neots2: loading: %s\n", name);
+            logf("neots2: loading: %s\n", name);
             loadingScreen(fraction, name);
         };
     }
@@ -257,6 +258,19 @@ void appendHostLog(const void* data, std::size_t size) {
         std::fclose(f);
     }
     g_inHostLog = false;
+}
+
+void logf(const char* format, ...) {
+    char text[400];
+    va_list args;
+    va_start(args, format);
+    const int n = std::vsnprintf(text, sizeof text, format, args);
+    va_end(args);
+    if (n > 0) {
+        const std::size_t size = std::min<std::size_t>(static_cast<std::size_t>(n), sizeof text - 1);
+        traceToRing(text, size);
+        appendHostLog(text, size);
+    }
 }
 
 void teeToHost() {
@@ -312,7 +326,7 @@ int runConsoleLot(int argc, char** argv) {
     loadingScreen(0.0f, "starting");
     // The controller after the screen, as the viewer test program does it.
     if (!ts2::platform::init()) {
-        std::printf("neots2: %s\n", ts2::platform::lastError().c_str());
+        logf("neots2: %s\n", ts2::platform::lastError().c_str());
         return 1;
     }
     try {
@@ -336,6 +350,14 @@ int runConsoleLot(int argc, char** argv) {
         memory("scene head read");
         loadingScreen(0.1f, "reading the scene");
         ts2::render::GsRenderer renderer(gs);
+        if (std::FILE* mode = std::fopen("host:vifmode", "rb")) {  // (a file with a digit: how much the VU1's batches may overlap, see GsRenderer::setBatchSync)
+            const int digit = std::fgetc(mode);
+            std::fclose(mode);
+            if (digit >= '0' && digit <= '2') {
+                renderer.setBatchSync(digit - '0');
+                logf("neots2: VU1 batch sync mode %c\n", digit);
+            }
+        }
         renderer.setTrace([](const char* text) {
             const std::string line = std::string(text) + "\n";
             traceToRing(line.data(), line.size());
@@ -367,13 +389,13 @@ int runConsoleLot(int argc, char** argv) {
             // The route grids and the behaviours the first ticks of a run need, now and not in the middle of a tick (each was a stall of a second or more).
             const std::uint64_t w0 = ts2::platform::ticksNs();
             const std::size_t warmed = life.simulation().warm();
-            std::printf("neots2: warmed %zu resources and the route grids in %.1f s\n", warmed, static_cast<double>(ts2::platform::ticksNs() - w0) / 1e9);
+            logf("neots2: warmed %zu resources and the route grids in %.1f s\n", warmed, static_cast<double>(ts2::platform::ticksNs() - w0) / 1e9);
             memory("simulation warmed");
             loadingScreen(0.95f, "reading textures for the first frame");
         }
         trimScene(scene);
         memory("scene trimmed");
-        std::printf("neots2: %zu Sims, clock %s\n", life.simCount(), life.clockText().c_str());
+        logf("neots2: %zu Sims, clock %s\n", life.simCount(), life.clockText().c_str());
 
         Orbit orbit;
         LotView lotView;
@@ -407,11 +429,12 @@ int runConsoleLot(int argc, char** argv) {
         CONSOLE_STAGE(11);
         std::uint64_t last = ts2::platform::ticksNs();
         unsigned frame = 0;
-        // Where a frame's time goes (wall clock; in an emulator only the proportions mean anything): sums over `kProfileFrames` frames, in seconds.
-        constexpr unsigned kProfileFrames = 60;
+        // Where a frame's time goes (wall clock; in an emulator only the proportions mean anything): sums over a few seconds of frames, in seconds.
+        unsigned framesInProfile = 0;
         double sumUpdate = 0, sumVisible = 0, sumDraw = 0, sumFrame = 0;
         ts2::render::GsRenderer::FrameStats sum;
         const auto seconds = [] { return static_cast<double>(ts2::platform::ticksNs()) / 1e9; };
+        double lastProfile = seconds();
         g_consoleStage = 4;
         for (bool running = true; running; ++frame) {
             g_consoleFrame = frame;
@@ -453,7 +476,7 @@ int runConsoleLot(int argc, char** argv) {
             const auto before = static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1}));
             keepCurrentStorey(scene, lotView.view, visible);
             if (frame == 0) {
-                std::printf("neots2: level %d of %d..%d: %zu instances shown, %zu with the storey filter\n", lotView.view.level, lotView.ground, lotView.top, before,
+                logf("neots2: level %d of %d..%d: %zu instances shown, %zu with the storey filter\n", lotView.view.level, lotView.ground, lotView.top, before,
                             static_cast<std::size_t>(std::count(visible.begin(), visible.end(), std::uint8_t{1})));
             }
             renderer.show(std::move(visible));
@@ -467,16 +490,16 @@ int runConsoleLot(int argc, char** argv) {
                     if (done == 1 || done == total || now - shown >= 500000000ull) {
                         shown = now;
                         std::snprintf(text, sizeof text, "reading texture %zu of %zu", done, total);
-                        std::printf("neots2: %s (%.1f s)\n", text, static_cast<double>(now - t0) / 1e9);
+                        logf("neots2: %s (%.1f s)\n", text, static_cast<double>(now - t0) / 1e9);
                         loadingScreen(0.95f, text);
                     }
                 });
-                std::printf("neots2: %zu textures read in %.1f s\n", count, static_cast<double>(ts2::platform::ticksNs() - t0) / 1e9);
+                logf("neots2: %zu textures read in %.1f s\n", count, static_cast<double>(ts2::platform::ticksNs() - t0) / 1e9);
             }
             CONSOLE_STAGE(16);
             if (frame == 2) {
                 const auto cam = orbit.camera();
-                std::printf("neots2: camera eye %.3f %.3f %.3f target %.3f %.3f %.3f fovX %.4f fovY %.4f far %.1f near %.4f\n", static_cast<double>(cam.eye[0]),
+                logf("neots2: camera eye %.3f %.3f %.3f target %.3f %.3f %.3f fovX %.4f fovY %.4f far %.1f near %.4f\n", static_cast<double>(cam.eye[0]),
                             static_cast<double>(cam.eye[1]), static_cast<double>(cam.eye[2]), static_cast<double>(cam.target[0]), static_cast<double>(cam.target[1]),
                             static_cast<double>(cam.target[2]), static_cast<double>(cam.fovX), static_cast<double>(cam.fovY), static_cast<double>(cam.farPlane),
                             static_cast<double>(cam.nearPlane));
@@ -496,37 +519,40 @@ int runConsoleLot(int argc, char** argv) {
                 sum.transform += f.transform, sum.emit += f.emit, sum.state += f.state, sum.submit += f.submit;
                 sum.eeCorners += f.eeCorners, sum.vuCorners += f.vuCorners, sum.draws += f.draws, sum.uploads += f.uploads, sum.clipped += f.clipped, sum.litHits += f.litHits, sum.litMisses += f.litMisses;
             }
-            if (frame % kProfileFrames == kProfileFrames - 1) {
-                const double n = kProfileFrames, ms = 1000.0 / n;
-                std::printf("neots2: profile %u frames, %.1f ms a frame: sim update %.1f, visibility %.1f, draw %.1f (collect %.1f, uniforms %.1f, light %.1f, vu build %.1f (texture %.1f, ee clip %.1f), vu wait %.1f,"
+            ++framesInProfile;
+            if (seconds() - lastProfile >= 5.0) {  // (every few seconds, not every 60 frames: a console may draw a frame a second)
+                const double n = framesInProfile, ms = 1000.0 / n;
+                logf("neots2: profile %u frames in %.1f s, %.1f ms a frame: sim update %.1f, visibility %.1f, draw %.1f (collect %.1f, uniforms %.1f, light %.1f, vu build %.1f (texture %.1f, ee clip %.1f), vu wait %.1f,"
                             " submit %.1f); %zu ee corners, %zu vu corners; %.0f draws, %.1f uploads, %.1f clipped, lit cache %zu hits %zu misses a frame\n",
-                            kProfileFrames, sumFrame * ms, sumUpdate * ms, sumVisible * ms, sumDraw * ms, sum.collect * ms, sum.uniforms * ms, sum.light * ms, sum.vuBuild * ms, sum.state * ms, sum.transform * ms,
-                            sum.vuWait * ms, sum.submit * ms, sum.eeCorners / kProfileFrames, sum.vuCorners / kProfileFrames, static_cast<double>(sum.draws) / n, static_cast<double>(sum.uploads) / n, static_cast<double>(sum.clipped) / n,
-                            sum.litHits / kProfileFrames, sum.litMisses / kProfileFrames);
+                            framesInProfile, seconds() - lastProfile, sumFrame * ms, sumUpdate * ms, sumVisible * ms, sumDraw * ms, sum.collect * ms, sum.uniforms * ms, sum.light * ms, sum.vuBuild * ms, sum.state * ms, sum.transform * ms,
+                            sum.vuWait * ms, sum.submit * ms, sum.eeCorners / framesInProfile, sum.vuCorners / framesInProfile, static_cast<double>(sum.draws) / n, static_cast<double>(sum.uploads) / n, static_cast<double>(sum.clipped) / n,
+                            sum.litHits / framesInProfile, sum.litMisses / framesInProfile);
                 sumUpdate = sumVisible = sumDraw = sumFrame = 0;
                 sum = {};
+                framesInProfile = 0;
+                lastProfile = seconds();
             }
             CONSOLE_STAGE(17);
             if (frame % 120 == 0) {
                 if (argc > 9 && life.hasSimulation()) {
                     if (const auto* followed = life.simulation().world().find(static_cast<std::int16_t>(std::strtol(argv[9], nullptr, 10))); followed != nullptr) {
-                        std::printf("neots2: Sim %s at x %.2f y %.2f level %d; camera target %.2f %.2f %.2f\n", argv[9], static_cast<double>(followed->x) / 65536.0,
+                        logf("neots2: Sim %s at x %.2f y %.2f level %d; camera target %.2f %.2f %.2f\n", argv[9], static_cast<double>(followed->x) / 65536.0,
                                     static_cast<double>(followed->y) / 65536.0, static_cast<int>(followed->level), static_cast<double>(orbit.target[0]),
                                     static_cast<double>(orbit.target[1]), static_cast<double>(orbit.target[2]));
                     }
                 }
                 const auto& stats = renderer.lastFrame();
-                std::printf("neots2: frame %u, %zu ticks, clock %s; %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped, %zu vu batches, %zu textures read\n", frame,
+                logf("neots2: frame %u, %zu ticks, clock %s; %zu draws, %zu triangles, %zu drawn, %zu culled, %zu clipped, %zu vu batches, %zu textures read\n", frame,
                             life.ticks(), life.clockText().c_str(), stats.draws, stats.triangles, stats.drawn, stats.culled, stats.clipped, stats.vuBatches, stats.uploads);
             }
         }
     } catch (const std::exception& ex) {
-        std::printf("neots2: %s\n", ex.what());
+        logf("neots2: %s\n", ex.what());
         std::snprintf(g_consoleError, sizeof g_consoleError, "%s", ex.what());
         g_consoleStage = 900;
     }
     ts2::platform::quit();
-    std::printf("neots2: done\n");
+    logf("neots2: done\n");
     for (;;) {  // (a program that returns is unloaded and its memory cleared: see tools/ps2test/pine_sym.sh)
         SleepThread();
     }
