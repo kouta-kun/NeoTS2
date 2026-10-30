@@ -529,3 +529,226 @@ image area still on a 16-byte boundary), so the renderer points the DMA straight
 costs 3.0 corners a triangle against 2.2 vertices indexed), heap in use after loading **8.2 MiB** (was 11.0 with the soups built at load), load time 0.1 s (was 0.2).
 A bug that the orbiting camera showed: a frame that ends on a blended draw leaves the Z write mask on, so the next frame's clear did not clear Z and stale depth
 hid triangles; the mask is reset before each clear.
+
+**Eight lots through the console path (2026-10-25, PCSX2, camera framing the whole lot, `--mesh-keep 0.2 --mesh-error 0.1`).** All baked, read back and drew; none ran out of memory.
+
+| Lot | File | Heap in use after load | Draws | Corners a frame | Frame (PCSX2) |
+|---|---|---|---|---|---|
+| N001 Lot 82 | 25.2 MiB | 10.8 MiB | 5,428 | 1.56 M | 1.30 s |
+| N003 Lot 192 | 33.4 MiB | 10.5 MiB | 3,959 | 1.06 M | 0.37 s |
+| N002 Lot 10 | 21.3 MiB | 8.6 MiB | 3,018 | 0.79 M | 0.28 s |
+| N001 Lot 68 | 21.6 MiB | 8.4 MiB | 2,750 | 0.68 M | 0.27 s |
+| N001 Lot 79 | 14.1 MiB | 7.0 MiB | 1,020 | 0.72 M | 0.10 s |
+| N003 Lot 128 | 12.5 MiB | 6.9 MiB | 2,850 | 1.36 M | 0.35 s |
+| N001 Lot 47 | 13.5 MiB | 5.9 MiB | 2,013 | 0.38 M | 0.18 s |
+| N002 Lot 32 | 0.01 MiB | 2.3 MiB | 0 | 0 | 0.02 s |
+
+Frame time follows draws more than corners (Lot 79 has 0.72 M corners in 1,020 draws and takes 0.10 s; Lot 82 has 5,428 draws): the per-draw EE work (uniforms, chain, DMA wait) is the next thing to cut, e.g. by
+merging the many small instances of one mesh. N002 Lot 32 bakes to an empty scene (0 primitives, one image): an empty lot in the save, or its ground comes from somewhere other than the
+lot scene; not yet looked at.
+
+## Running the game on the console: where it stands and what is in the way (2026-10-25)
+
+**Done:** `gs_lotview` is now an interactive viewer: the ROM's `SIO2MAN`/`PADMAN` modules, `libpad` port 1, a loop that runs until power-off (`pad` as the last argument), left stick turns and tilts the
+camera, L1/R1 or the d-pad's up/down move in and out. It opens the pad port and loops in PCSX2; **the input itself is untested** (no controller or key events can be sent to PCSX2 headlessly, and
+PCSX2's default pad may report buttons differently), so check it with a real pad.
+
+**What "the game" needs next, in the order it should be tackled:**
+1. **The simulation's memory.** Measured on the host with the OS X base install: `ts2sim` for a lot with four Sims peaks at **61 MiB** (index 28 MiB, `bhav::parse` 4.7, route grid 4.3, room map 2.9,
+   object-type lookups ~6.5, world restore 1.7) against a **27 MiB** heap that already holds ~8-11 MiB of baked scene and 14 MiB of textures. So the sim needs its resources from the bank (`ts2bank`: gather what a
+   lot's simulation reads, not only its scene), a compact sorted index read in place (`content::Bank` already is one) instead of the per-package hash maps, behaviours parsed on demand and dropped, and the
+   texture budget cut (256 px cap -> 128 px for objects, or fewer resident textures) to buy back heap. Target: sim under ~10 MiB.
+2. **Run the simulation headlessly on the EE first** (no rendering): `simrun`'s core over a bank, in PCSX2, timing ticks (0.27 ms a tick on the server; the EE is probably 30-100x slower, unmeasured). The Lua 5.0
+   runtime and `std::filesystem`/`std::thread` use in `ts2sim` have not been run on the console at all.
+3. **Sims in the scene:** skinned meshes are baked (joints/weights per corner) but not drawn; the VU1 path needs a skinning variant (or poses baked per animation) and the rig/animation data in the bank.
+4. **Game loop and UI:** a frame loop that steps the sim, moves the camera, and draws the lot; a minimal UI (pie menu, speed buttons, status) as sprites through `GsRenderer::showSprites` (not implemented: the sprite pass
+   and a font/UI atlas baked by the converter). Sprites are 1,558 images / 72.7 MiB on the PC; they need the same palette treatment.
+5. **Launch into a lot:** one ELF per mode (neighborhood, lot, build), a loading screen, saves on the memory card (compact format, plan above). Starting with the lot ELF started from `host:` or the DVD with a baked lot and its
+   bank is the first playable target.
+Not started: audio, the neighborhood view (terrain, water, roads, imposters), build mode.
+
+## What the simulation reads (measured 2026-10-25: `simrun <install> --lot <lot> 3000 --measure`, OS X base game, decompressed bytes)
+
+`ResourceIndex::sharedObserver` (new) reports every resource read through any index; `simrun --measure` splits them into reads while the lot loads and while it ticks. N001 Lot 68, 3,000 ticks (the sim stops on two
+unimplemented/erroring interactions, as it does on the PC):
+
+| Resource (type) | Load: distinct / bytes | Ticks: distinct / bytes |
+|---|---|---|
+| BHAV behaviours (0x42484156) | 18,810 / 5.59 MB | |
+| OBJD object definitions (0x4F424A44) | 3,484 / 1.08 MB | |
+| SLOT slots (0x534C4F54) | 1,771 / 0.83 MB | 1 / 4.5 KB |
+| 0xCCA8E925 (per-object tables) | 476 / 0.79 MB | |
+| STR# string tables (0x53545223) | 37 / 0.45 MB | 40 / 1.99 MB |
+| GLOB globals (0x474C4F42) | 1,380 / 0.14 MB | |
+| OBJf function tables (0x4F424A66) | 331 / 0.09 MB | 12 / 3 KB |
+| 0xFB00791E | | 123 / 1.11 MB |
+| TTAs pie-menu strings (0x54544173) | | 8 / 0.87 MB |
+| TTAB pie-menu tables (0x54544142) | | 63 / 0.39 MB |
+| BCON constants (0x42434F4E), 0x2CB230B8, FCNS, 0xACA8EA06 | 103 / 0.07 MB | 179 / 15 KB |
+| **simulation total** | **about 9.1 MB** | **4.2 MB** |
+| models for routing (GMDC 0xAC4F8687, CRES, GMND, SHPE), read by the route-grid builder through `scene::Assets`, not by the simulation | 215 meshes / 17.3 MB + 0.65 MB | |
+
+- Two more lots (N001 Lot 82, N003 Lot 128) read **the same 18.8 k behaviours, 3.5 k object definitions and 1.8 k slots (7.5 MB)** at load, so that part is the whole base game's object code, not the lot's: the simulation parses every behaviour of
+  every object type when it loads. During 3,000 ticks those two lots read only 0.06 MiB more (their Sims did little), Lot 68 read 4.2 MB more (pie menus, strings) as its Sims started interactions.
+- So what a bank for the simulation holds: BHAV/OBJD/SLOT/STR#/TTAB/TTAs/GLOB/OBJf/BCON, about 13 MB decompressed in about 10 k resources, nearly all of it shared by every lot (it can be one bank on the disc, not one per lot).
+  The route-grid models (17 MB) are a converter job: the footprint of each object type baked once (a few bytes each) instead of reading its model at run time.
+- Not yet measured: which of the 18.8 k behaviours a lot's Sims actually *execute* (the VM runs the ones objects call; lazy parsing of the rest would cut the 4.7 MiB parse), and the Lua scripts' share.
+
+**Lua (2026-10-25).** `tools/opcodecount <install> 7E` over the OS X base game: **0 of 17,274 behaviours use the Lua-script primitive (opcode 0x7E)**. The OS X install has no `ObjectScripts.package`
+either (that is where the Lua modules live in the Legacy collection), and the simulation's only use of the runtime is that primitive (`Execution::luaScript`, `World::scripts()`), so a base-game-only
+console build needs neither the scripts nor `lua50` (110 KiB of code, plus the runtime's heap, which is zero today because `loadScripts` returns null here). If expansion content is ever wanted the primitive
+must come back with the runtime; until then it can be compiled out.
+
+**Working memory of the simulation (heaptrack of `simrun` on the base install, peak 61 MiB, earlier measurement, not re-run):** package index 28 MiB (hash maps 20.7, entries 7.5), parsed behaviours 4.7, route grid 4.3, room
+map 2.9, object-type and behaviour lookups ~6.5, restored world 1.7, remaining ~13 MiB unattributed (strings, per-object state, the lot's load, containers). What a console build needs of that: the index becomes the bank's
+sorted table in place (~0.3 MiB for ~10 k resources); behaviours 5.6 MB raw, parsed on demand (how many execute is not yet measured); route grid, room map and the world are per-lot state (about 9 MiB as they are,
+compactable: the grids are byte or word per tile); the unattributed 13 MiB needs a fresh trace. A first estimate for the simulation on the console: **10 to 15 MiB working set plus 5.6 MB of resident behaviours**, which does
+not fit beside an 8-11 MiB baked scene and 14 MiB of resident textures in 27 MiB without cutting textures and parsing behaviours lazily.
+
+**Where the simulation's 61 MiB went (heaptrack, 2026-10-26; N001 Lot 68, OS X base).** `simrun` builds *three* indices over the same packages (its own, `scene::Assets`', `LotSimulation`'s) and `Assets` besides, so most of the
+earlier "index 28 MiB" and the ~13 MiB left over were copies the simulation does not need. `tools/simmem` builds only a `LotSimulation` and ticks it: **peak 34.2 MiB** (heaptrack, 300 ticks, no routing: that needs `Assets`):
+
+| Part | MiB |
+|---|---|
+| `LotSimulation`'s own index (hash map nodes 9.4, package entries 2.0, `addPackage` 0.5) | 11.9 |
+| parsed behaviours and their lookups (`behavior` 4.9, `behaviorByName` 2.8, `namedTree` 1.4) | 9.1 |
+| world restored from the lot (`buildWorld`) | 4.6 |
+| parsed string tables (`IndexCodeSource::strings`) | 3.1 |
+| lot file, object types, objects (`loadLot` 1.2, `objectType` 0.9, `cobject` 0.65), neighborhood 0.4, other | ~4.9 |
+
+With routing (needs `Assets`): route grid 4.7 MiB and route world 0.4 more. What a console build keeps: the index becomes the bank's table (~0.3 MiB, **-11.6**), the 9.1 MiB of parsed behaviours and the 3.1 of strings go if they are stored
+pre-parsed and read in place (see below), leaving about **8-9 MiB of world and lot state, +5 MiB with routing**: roughly 13-14 MiB, plus the resident part of the bank.
+
+*Ahead-of-time forms:* native code for behaviours would be bigger than the bytecode (each 16-byte-operand node becomes a call sequence), cannot be paged in place, and gains little speed: a tick runs a few thousand nodes whose bodies (routing, animation,
+object search) dominate. What helps is a **pre-parsed, pre-linked** form made by the converter: nodes in a fixed layout with targets, called trees and string references resolved to indices, stored in the bank and read where they lie, so
+nothing is parsed or cached at run time (the 12 MiB above) and only the pages that run need be in RAM.
+
+**Which behaviours can run (`tools/bhavclosure <install> <lot> [ticks]`, 2026-10-26, N001 Lot 68, OS X base).**
+- Static closure from the 331 present object types (218 groups): their function tables and interaction tables give 4,717 entry trees; following calls (by number: <0x1000 global, <0x2000 the code owner's, else its semi-global group) and
+  Run Tree by Name gives **4,408 of the install's 18,810 behaviours, 1.47 MB raw**.
+- Run Tree by Name: the name is an immediate operand (index into a string table), never computed. All 1,999 sites in the base game use mode 0, 1 or 2 (group = the stack object's group: bounded by the present types) except one with mode 255; **none use mode 3**
+  (group from a GUID in temps). So the name set is static and only the group searched depends on run time.
+- Executed in 3,000 ticks: 567 trees, 0.21 MB; 561 are in the closure. The 6 outside are trees of objects **created at run time** (social-interaction objects such as "Social - Memory - Tease", groups 0x7F443754, 0x7F2BAC29) and a few global/semi-global ones they reach.
+  Closing the gap: also seed the types that Create New Object Instance sites name (GUID operand), not done yet.
+- The save-compatibility check (`typeChangedSinceSave` -> `treeSignature`) is what read 18.8 k behaviours at load; the converter can precompute those signatures.
+
+**Routing footprints (`src/sim/object_footprint.cpp`).** The grid is *not* whole-cell: it is a quadtree whose leaves go down to 1/8 of a tile, over float rectangles. An object's footprint is, in order: a square (OBJD flag, side from OBJD field 0x43 in 1/16 tile, per-side insets from field 0x4D),
+else the model's own "footprint" data list (per tile an 8x8 bit mask, 1/8-tile cells, merged into rectangles), else the model's x/y extent clipped to the tile. Rectangles get a 0.3-tile padding item that only the path search keeps clear of, and goal spots are
+tested against the footprint. The models are read because the masks (and the extent fallback) live in the model, not in the object definition; the converter can bake them per object type and orientation (8 bytes a tile).
+
+**Follow-ups (2026-10-26).** Seeding the closure with all 144 object types named `Social*` (the objects interactions create at run time) makes it 5,566 trees / 1.95 MB (from 4,408 / 1.47 MB) and covers 564 of the 567 trees executed in 3,000 ticks; the other three are global/semi-global
+trees. So the interaction objects add about 1,160 trees and 0.48 MB: cheap enough to preload. Each BHAV carries a 64-byte name (`bhav.cpp: kNameSize`): 18,810 x 64 B = 1.2 MB of the 5.6 MB of raw behaviours is names that only by-name lookups and logs use; the by-name
+operand can be rewritten to a number by the converter and the names dropped (a name->instance table per group, or the string table's index turned into the target instance, whichever the VM needs).
+
+## The simulation runs on the console (2026-10-26, PCSX2, N001 Lot 68 from a simbank folder)
+
+`tools/simbank <install> <lot> <out> [ticks]` gathers everything the simulation read while the lot loaded and ticked (26,093 resources, 10.4 MiB, the neighborhood's characters included) into `out/code.package`, with the lot's and its neighborhood's
+packages and a `sim.cfg` (installed-packs mask, lot path). `LotSimulation(packages, mask, lot)` loads from that instead of an install (no Lua scripts, no want definitions, no character files). `tools/simmem <bank> [ticks]` runs it; built for the PS2 as well.
+
+| | Host (x86-64) | PCSX2 EE (software-timed) |
+|---|---|---|
+| lot load (index, 3,484 object types, 508 objects, 170 Sims' state, hood) | 0.12 s | **6.1 s** |
+| tick, mean over 300 | 0.23 ms | **about 1 ms**, slowest 2 ms |
+| heap in use after load / after 300 ticks | 25.0 / 26.0 MiB | **14.6 / 14.6 MiB** (32-bit pointers make the node-heavy tables smaller) |
+
+So the simulation fits the console's 27 MiB heap even unchanged (14.6 MiB against the ~8-11 MiB of a baked scene and the texture cache, which leaves the pre-parsed bank for later), and the EE is only about 5x slower than the host at ticking (PCSX2 is not cycle-accurate; the VM's
+interpreter loop is not stalled by memory the way a real EE's would be: expect worse on hardware). Routing was not available (no route sources), as in `simmem` on the host, so Sims that must walk stop with "routing needs the lot's route grid": the tick cost is for the rest of the work.
+
+**What was in the way, in the order it was found:**
+1. `std::filesystem::exists()` on the neighborhood package stopped the program (every later line in the log vanished) **only after the simulation had loaded its code**; alone it works. Replacing it with an `ifstream` open check
+   in `LotSimulation::load` lets the lot load; the cause (the `stat` path of the toolchain's libc, perhaps its descriptors or stack) is not known.
+2. **PCSX2's log is lossy after a point** (prints stopped appearing while the program ran on), and stderr never shows. What fixed the debugging: read the program's own globals from outside with PCSX2's PINE interface
+   (`EnablePINE = true`; `tools/ps2test/pine_read.py`, `pine_sym.sh`, `run_pcsx2_pine.sh`), so every result of `simmem` is also kept in `g_*` globals. A `-finstrument-functions` ring of the last functions entered
+   (read the same way) showed where the program was; it makes everything 10x slower, so slow runs look like hangs.
+3. False leads, for the record: a 128 KiB default stack, `std::hash` of 64-bit keys (a table with them did stop growing at 257 buckets in a test, but not in the real run), exceptions, double-precision math, host file latency (0.2 ms a read), the EE recompiler (the interpreter stalls the same).
+
+## The simulation from a pre-parsed, compressed bank, and what stopped it (2026-10-26)
+
+**Bank.** `simbank` now writes `code.package` with only what the run read (9,162 resources instead of 26,175), the lookups by name (`NAME` resource, group 0 instance 0: `behaviorByName` answers from it instead of
+parsing every behaviour of the install to learn names), the neighborhoods' identities (`nhoodid` resources: the simulation no longer opens every neighborhood's packages), and every resource QFS-compressed when
+that saves space (`qfs::compress`, checked by unpacking): **5.96 MiB of resources stored in 1.27 MiB**. The console reads the bank whole into memory in one sequential read (`dbpf::Package(path, inMemory)`), so
+the roughly 10,700 random small reads the simulation made from the package are gone (they took 220 s from a disc image with fast CDVD, and would be far slower on a real disc). The host fingerprints did not change
+(`4904081e` after 3,000 ticks, `4dfbd967` after 300).
+
+**What was stopping the program: kernel semaphores.** For days the console run stalled in ways that looked like the host file system failing (`open` returning -1 with no trace in PCSX2's log, reads failing after
+about 10,750, a `free` that never returned). Neither the file system nor memory was at fault. The EE kernel has a few hundred semaphores; this toolchain's libstdc++ uses the mutex lock policy for `shared_ptr`
+(the R5900 has no compare-and-swap), so every `make_shared` runs `pthread_mutex_init`, which takes a semaphore that is never given back (`IndexCodeSource::behavior` alone made 1,552). Once the table was full,
+`CreateSema` returned -1 and every lock that was created afterwards (the C library's, stdio's) waited on a semaphore that did not exist. `tools/ps2test/pthread_light.cpp` (linked with `-Wl,--wrap=pthread_mutex_*`)
+makes mutexes cost nothing, which is right for a program with one thread. **Any console program that uses `shared_ptr` or `std::mutex` needs it.**
+
+How it was found, for next time (all in `tools/ps2test`, `-DNEOTS2_PS2_DEBUG=ON` for the helpers): a sampler of the interrupted address on every vertical blank (`pc_sampler.cpp`; an address below 0x100000
+every time means every thread is blocked in the kernel), a monitor thread that asks the kernel what the main thread waits on (`ReferThreadStatus`: wait type 2 = a semaphore, `ReferSemaStatus` for its state), and a
+wrapper on `CreateSema` that logs who asks and what comes back. Earlier dead ends, so they are not tried again: heap size and address, descriptor count, stack size, interrupts, idle time, optimisation level,
+the atomics shim, exceptions, `sbrk` trimming, a guard-band allocator, heap consistency.
+
+**Result.** Lot 68's bank from `host:` and from an ISO (`tools/ps2test/run_pcsx2_iso.sh`; `cdrom0:` finds only upper-case names, `disc_paths.cpp` upper-cases them where `_open` is called): load 7.7 s, 3,000 ticks in
+15 s (5 ms a tick on average, but the slowest tick is 1.3 s: a route plan), heap 15.5 MiB loaded and 18.8 MiB after the ticks. The fingerprint is not the host's (`ec2ee055`), which is expected: the EE's float unit
+is not IEEE (it rounds toward zero, has no NaN or infinity), so routing differs and Sims take other paths. Because they do, the bank must hold every behaviour they could run, not only the ones the host's run
+used: three stops on the EE are `BHAV not found` for behaviours the host never needed. The next step for the bank is the static closure (`tools/bhavclosure`) added to what the run recorded.
+
+## The bank covers what Sims could do, and the first full run (2026-10-26, later)
+
+The console's floats are not IEEE, so Sims leave the path the host's run took (the world matches the host's at every fifth tick until tick 120 and parts by 125; `SIMMEM_FINGERPRINTS=1` on the host and `g_fingerprints` on the
+console show it). The bank therefore holds more than one trajectory: `simbank` adds the static closure of the lot's object types plus the `Social*` types (5,566 behaviours, `src/sim/behavior_closure`, shared with
+`tools/bhavclosure`), the constants of their groups, the global string tables, and asks the animation library once for every animation of the global age lists (595 names), so the support table knows their lengths
+(an animation the table does not know counts as one that does not exist; that was the cause of "Animation name is empty string"). `SIMBANK_NO_CLOSURE=1` leaves the closure out.
+
+Memory was the next limit (the heap is about 26 MiB): the first route plan builds the route world and frees the loaded lot, and that is where the heap peaks. The neighborhood package in the bank now keeps the
+wants and fears only of the neighbors whose Sims are on the lot (4 of 280; they were the largest single user, 5.5 MB on the host), and is compressed: 0.83 MiB.
+
+Lot 68 on PCSX2 from `host:`: bank 8.99 MiB of resources, 2.34 MiB stored; load 6.3 s; 3,000 ticks in 15.5 s (5 ms a tick, slowest 1.3 s); heap 18.7 MiB loaded, 21.3 MiB after; two stops left, each once
+(`Animation name is empty string` for list 0x81 entries 0 and 1). The fingerprint is `757e0f08` against the host's `4904081e`, which is the float difference, not an error.
+Still to do: prune the object definitions to the types the lot and `Social*` need (about 2 MB of heap), a smaller program image, and the route plan that takes 1.3 s.
+
+## NeoTS2 itself on the console: the first combined build (2026-10-26, evening)
+
+**One executable.** `app/main.cpp` is the entry point on every platform: built for the console (`__PS2__`) it hands over to `app::runConsoleLot` (`app/console_lot.cpp`) and the desktop code is compiled out. The
+console lot mode is what the desktop's lot view does with the baked scene in place of `scene::Assets` + `SceneBuilder`: `app::LotView` and `app::Orbit` (the desktop's own camera, storey and wall-view code),
+`scene::visibleInstances` + `GsRenderer::show/draw`, and `app::ConsoleLife` (`app/console_life.cpp`) in place of `LotLife`: it runs `LotSimulation` from a bank in step with real time (at most 2 ticks a call, so
+one slow tick is not followed by a pile) and moves a marker per Sim. `src/platform/ps2/platform_ps2.cpp` is the console's `platform.hpp`: the pad is the keyboard (d-pad and left stick pan, L2/R2 zoom, L1/R1 turn a
+quarter, triangle/cross change storey, square the wall view, circle the roofs, Start leaves) and `pollEvent`/`keyHeld` report it, so the desktop's own `orbitStep` and `LotView::key` run unchanged. Target `neots2` in
+`CMakeLists.txt` (PS2 block); run `neots2.elf host:<bank> host:<scene.cscene> [stage to stop at]`; with no arguments it reads `cdrom0:\BANK` and `cdrom0:\LOT.CSC`.
+
+**Baked scene additions** (`tools/ts2bake`, format changed, rebake old files): `Scene::floorGrid` (the floor's height at the middle of every tile of every storey, 3 x 40 x 40 floats for Lot 68; `floorHeight` is rebuilt
+from it on the console) and one "sim-marker" instance per Sim of the lot (a 0.3 x 0.3 x 0.9 post, `Instance::object` = the Sim's id). Real Sims (skinned, animated) are still to do.
+
+**Memory is the limit, and these are the numbers (EE, Lot 68, PCSX2; the heap is about 26 MiB):** baked scene resident 8.45 MiB (head read 7.70, uploaded 8.45; the file's head is 4.9 MiB, the rest is the `Scene`
+structure, and `prepareBaked` is given a copy of it) + simulation 13.3 MiB after loading and 15.6 MiB after 3,000 ticks (was 18.7 and 21.3 this morning) = 21.75 MiB in use after both are loaded, and it fits, but
+the renderer's caches (textures 6 MiB, lit colours 5 + 5 MiB: budgets, not use) were sized for a program with the heap to itself and the console lot mode lowers the texture one to 2 MiB. Cuts made today, host
+equivalents in brackets: object definitions pruned to the types the lot, the `Social*` objects and what trees create by a GUID they hold need (925 of 3,484; `SIMBANK_KEEP_ALL_TYPES=1` keeps all) [-2.7 MiB];
+`RoomMap` as one byte per quarter tile with a palette of room ids (the lot's wall graph is 214 x 214 tiles x 4 levels, and two maps stay resident) [-4.4 MiB]; route grid cells 28 bytes, not 44, with one index
+for their four consecutive children [-1 MiB]; the neighborhood package without the wants and fears of neighbors who are not on the lot [-5 MiB]. **Pruning changes what the simulation can enumerate** (Set to Next
+over object types), so the host's replay of a pruned bank no longer matches the recording's fingerprint; that is expected. Still to cut: `Package::entries_` after the index copy and `ResourceIndex::byKey_` as a sorted
+vector (~1 MiB), the baked scene's overhead (~2.8 MiB), a smaller program image (-Os, --gc-sections: the heap is RAM minus the image, so each byte saved is a byte of heap), items in route grid leaves.
+`SIMMEM_KEEP=1` on the host (`simmem` leaves without freeing) with `heaptrack_print -l 1` lists what the simulation holds live, by allocation site.
+
+**Open: the console lot mode crashes (the kernel reboots, "Get Reboot Request From EE") about 1.5 s after the simulation has loaded, before the first frame's stage 12 marker; being bisected.**
+Debugging aids: `g_consoleStage` / `g_consoleFrame` / `g_consoleError` read with `tools/ps2test/pine_sym.sh`, and the third argument parks the program at a stage so its memory can be read (a program that crashes
+or returns is cleared by the reboot).
+
+**Bank additions today:** `simbank` runs the static closure of the lot's types (`src/sim/behavior_closure`, also used by `tools/bhavclosure`), iterating on object types created by a literal GUID; adds the
+global string tables; asks the animation library once for every animation of the global age lists (so replayed lengths cover them); writes the neighborhood package filtered and compressed. `qfs::compress` is the
+game's format's encoder (greedy, checked by unpacking). Lot 68's bank is 18,701 resources, 9.24 MiB, 2.56 MiB stored.
+
+## The combined program runs; `--gc-sections` was eating the unwind tables (2026-10-26, night)
+
+**State.** `neots2.elf host:<bank> host:<scene.cscene>` (Lot 68, scene baked with `--max-side 64 --mesh-keep 0.15`) draws the lot and runs the simulation beside it, tick after tick (1,176 frames and 528 ticks
+when last looked at, 25 MiB in use, no out-of-memory, no abort): the first time the real executable has lot, Sims' markers and simulation together. Image 2.74 MB at `-Os`. The 64 px textures are soft; `--max-side` is the
+dial (the owner is happy to go as low as 16). What it took, on top of this morning's cuts: texture cap 256 -> 64 px (the viewer needed 13.9 MiB of textures resident for one frame at 256, 3.8 at 128, about 1 at
+64: they have to be in RAM because VRAM has about 1.8 MiB free for them); route grid down to a quarter tile (`RouteGrid::finestSize`, 0.25 on the console, -2.8 MiB; the host default stays 1/8); `Package::releaseEntries` once
+a ResourceIndex has copied them; the renderer's chain buffer growing by a quarter instead of doubling; lit-colour cache budgets 256 KiB (`GsRenderer::setCacheBudgets`); `-Os` and `--gc-sections` (image 4.9 -> 2.7 MB: the heap
+is RAM minus the image, so every byte of image is a byte of heap).
+
+**The trap in `--gc-sections` (found after a day of misattributing it to `-Os`/`-O2`).** The SDK's linker script (`ps2sdk/ee/startup/linkfile`) names neither `.eh_frame` nor the per-function `.gcc_except_table.*` that
+`-ffunction-sections` makes, so they are orphan sections, and with `--gc-sections` the linker drops all of them. The program runs until the first exception is *thrown* (the simulation throws its first about tick 120,
+when Sims start to act), then `abort()` is called from inside libgcc's unwinder (`uw_init_context_1`) and the BIOS reboots the machine ("Get Reboot Request From EE"). `build-ps2` looked fine only because it had been
+reconfigured, not reconfigured *from scratch*: toolchain `*_INIT` flags apply on the first configure only, so it never had `--gc-sections`. **Fix: `cmake/ps2.ld`, a copy of the SDK's script with `KEEP(*(.eh_frame))` and the
+wildcard exception tables, substituted into the linker flags in `cmake/ps2.cmake`. Any new console build directory must be configured from scratch (`rm -rf` it) after a change to the toolchain file.** How it was found:
+`-DNEOTS2_PS2_DEBUG=ON` parks the program in `abort`/`_exit` with the caller's address (`g_exitKind`, `g_exitRa`), `-DNEOTS2_PS2_TRACE=ON` (with it) traces the routing code's functions (`g_traceRing`), and
+`nm`/`readelf -S` showed the build that aborted had no `.eh_frame` section at all. Also learnt: overwriting `CMAKE_EXE_LINKER_FLAGS` on the cmake command line replaces the toolchain's own flags (library paths, linker script): use
+`-U` to go back; `mesh_decimate.cpp` and `rig_layers.cpp` must stay at `-O3` (compiler crash / wrong code at `-Os`); only `sceSifCallRpc` exists as a symbol to wrap, not `SifCallRpc`.
+
+**Memory now (EE, PCSX2).** Scene resident 8.4 MiB, simulation 13.1 MiB after 3,000 ticks (was 21.3 this morning), textures about 1 MiB, renderer working set a few MiB. Remaining cuts if needed: `ResourceIndex::byKey_` as a sorted
+vector (~0.5 MiB), `SimObject` (3.2 KB each, 508 of them: person data, walking and other records are inline for every object, ~0.8 MiB), strings and pie-menu text only the UI needs, object definitions pruned harder.
+Not done yet: the baked lighting handling day/night (owner: later), showing only the current storey (with an imposter for the others' outsides), Sims' own models, UI, the menu and neighborhood modes, audio, memory-card saves,
+disc layout (everything so far is read through `host:`).

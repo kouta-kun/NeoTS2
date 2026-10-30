@@ -59,7 +59,7 @@ fi
 echo "serving $serve to $ip (host:neots2.elf, host:bank, host:lot.cscene); Ctrl-C to stop"
 # The program also writes what it prints to host:neots2.log (what ps2link shows of it can be nothing): shown here as it grows.
 touch "$serve/neots2.log"
-tail -n +1 -F "$serve/neots2.log" 2>/dev/null | sed -u 's/^/[program] /' &
+tail -n +1 -F "$serve/neots2.log" 2>/dev/null | sed -u 's/^/[program] /' | tee "$orig/neots2_persistent.log" &
 ps2client -h "$ip" execee host:neots2.elf host:bank host:lot.cscene
 # ps2client returns once the program has been started on some versions: stay as the file server and console (not exec'd: the cleanup above runs when it ends).
 ps2client -h "$ip" listen
